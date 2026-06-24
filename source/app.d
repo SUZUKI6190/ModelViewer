@@ -47,8 +47,13 @@ class ViewportWidget : Widget
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
         layoutWeight = 1;
-        minWidth = 1;
+        minWidth = 100;
         backgroundDrawable = DrawableRef(new OpenGLDrawable(&drawScene));
+    }
+
+    override void measure(int parentWidth, int parentHeight)
+    {
+        measuredContent(parentWidth, parentHeight, 100, 0);
     }
 
     private void reportGpuStateOnce()
@@ -190,6 +195,8 @@ class ViewportWidget : Widget
             _state.camera.zoom(scrollDelta);
 
         glViewport(rc.left, windowRect.height - rc.bottom, rc.width, rc.height);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(rc.left, windowRect.height - rc.bottom, rc.width, rc.height);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_MULTISAMPLE);
         glClearColor(0.12f, 0.14f, 0.18f, 1.0f);
@@ -203,10 +210,8 @@ class ViewportWidget : Widget
 
         _state.mesh.draw(*_shader, modelMatrix, mvpMatrix);
 
+        glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
-        glUseProgram(0);
-        glBindVertexArray(0);
-        glViewport(0, 0, windowRect.width, windowRect.height);
     }
 }
 
@@ -235,6 +240,8 @@ class ModelViewerWidget : HorizontalLayout
         auto panel = new VerticalLayout("panel");
         _panel = panel;
         panel.layoutWidth = 320;
+        panel.minWidth = 320;
+        panel.maxWidth = 320;
         panel.layoutHeight = FILL_PARENT;
         panel.margins = Rect(12, 12, 12, 12);
         panel.padding = Rect(8, 8, 8, 8);
@@ -297,6 +304,22 @@ class ModelViewerWidget : HorizontalLayout
                 " vertices, ", _state.model.triangleCount, " triangles)");
 
         refreshUi();
+    }
+
+    override void onDraw(DrawBuf buf)
+    {
+        if (visibility != Visibility.Visible)
+            return;
+        Rect rc = _pos;
+        applyMargins(rc);
+        auto bgSaver = ClipRectSaver(buf, rc, alpha);
+        DrawableRef bg = backgroundDrawable;
+        if (!bg.isNull)
+            bg.drawTo(buf, rc, state);
+        applyPadding(rc);
+        auto saver = ClipRectSaver(buf, rc, alpha);
+        _viewport.onDraw(buf);
+        _panel.onDraw(buf);
     }
 
     ~this()
