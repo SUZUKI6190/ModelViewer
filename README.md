@@ -64,13 +64,17 @@ dub run --config=application -- data/cube.geo.xml
 
 ### セットアップとビルド
 
-PowerShell でプロジェクトルートから実行:
+PowerShell で **プロジェクトルート**（`ModelViewer` フォルダ）から実行:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup-bindbc-imgui.ps1
 dub build --config=application
 dub run --config=parser-test
 ```
+
+> **補足:** dub は依存パッケージを `C:\Users\<ユーザー名>\.dub\packages\` に保存します。  
+> これは作業フォルダではなく **dub の共通キャッシュ** です。スクリプトがこのパスを参照するのは正常な動作です。  
+> `DUB_HOME` 環境変数を設定している場合は、そちらが使われます。
 
 初回ビルド時、`bindbc-imgui` が cimgui を Visual Studio でビルドするため数分かかることがあります。
 
@@ -88,6 +92,7 @@ dub run --config=application -- data\cube.geo.xml
 
 | 症状 | 対処 |
 |------|------|
+| `bindbc-imgui package not found` | プロジェクトルートで `dub fetch` を実行してからセットアップを再実行 |
 | `deps\cimgui not found` | `scripts\setup-bindbc-imgui.ps1` を実行 |
 | `vswhere not found` / MSVC エラー | VS 2022 + C++ ツールをインストール |
 | `cmake` が見つからない | CMake をインストールし PATH に追加 |
