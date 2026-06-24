@@ -33,15 +33,66 @@ class ViewportWidget : Widget
 {
     AppState* _state;
     ShaderProgram* _shader;
+    bool _shaderCompileFailed;
+    void delegate() _onGpuStateChanged;
+    bool _gpuStateReported;
 
-    this(AppState* state, ShaderProgram* shader)
+    this(AppState* state, ShaderProgram* shader, void delegate() onGpuStateChanged = null)
     {
         super("viewport");
         _state = state;
         _shader = shader;
+        _onGpuStateChanged = onGpuStateChanged;
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
         backgroundDrawable = DrawableRef(new OpenGLDrawable(&drawScene));
+    }
+
+    private void reportGpuStateOnce()
+    {
+        if (_gpuStateReported || _onGpuStateChanged is null)
+            return;
+        _gpuStateReported = true;
+        _onGpuStateChanged();
+    }
+
+    /// OpenGL calls must run while the drawable context is current (Win32 needs this).
+    private bool ensureGpuResources()
+    {
+        if (_shaderCompileFailed)
+        {
+            reportGpuStateOnce();
+            return false;
+        }
+
+        if (_shader.program == 0)
+        {
+            if (!_shader.compile(meshVertexShader, meshFragmentShader))
+            {
+                _shaderCompileFailed = true;
+                _state.loadError = "Failed to compile shaders";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+
+        if (_state.model.vertexCount > 0 && _state.mesh.vao == 0)
+        {
+            if (!_state.mesh.upload(_state.model))
+            {
+                _state.loadError = "Failed to upload mesh to GPU";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void resetGpuState()
+    {
+        _gpuStateReported = false;
+        _shaderCompileFailed = false;
     }
 
     override bool onMouseEvent(MouseEvent event)
@@ -116,6 +167,9 @@ class ViewportWidget : Widget
     private void drawScene(Rect windowRect, Rect rc)
     {
         if (rc.width <= 0 || rc.height <= 0)
+            return;
+
+        if (!ensureGpuResources())
             return;
 
         float scrollDelta = _state.camera.consumeScrollPending();
@@ -214,10 +268,7 @@ class ModelViewerWidget : HorizontalLayout
 
         addChild(panel);
 
-        if (!_shader.compile(meshVertexShader, meshFragmentShader))
-            throw new Exception("Failed to compile shaders");
-
-        _viewport = new ViewportWidget(_state, &_shader);
+        _viewport = new ViewportWidget(_state, &_shader, &onGpuStateChanged);
         addChild(_viewport);
 
         if (!tryLoadModel())
@@ -245,9 +296,15 @@ class ModelViewerWidget : HorizontalLayout
         return super.onKeyEvent(event);
     }
 
+    private void onGpuStateChanged()
+    {
+        updateModelInfo();
+    }
+
     private bool onLoadClicked(Widget)
     {
         _state.modelPath = _pathEdit.text.to!string;
+        _viewport.resetGpuState();
         if (!tryLoadModel())
             writeln("Load failed: ", _state.loadError);
         else
@@ -269,12 +326,6 @@ class ModelViewerWidget : HorizontalLayout
             gl3n.linalg.vec3 maxBound;
             _state.model.computeBounds(minBound, maxBound);
             _state.camera.fitToBounds(minBound, maxBound);
-
-            if (!_state.mesh.upload(_state.model))
-            {
-                _state.loadError = "Failed to upload mesh to GPU";
-                return false;
-            }
 
             _state.loadError = "";
             return true;
@@ -320,8 +371,17 @@ class ModelViewerWidget : HorizontalLayout
 
 private string defaultModelPath(string[] args)
 {
-    if (args.length > 1)
-        return args[1];
+    foreach (arg; args)
+    {
+        if (arg.length == 0)
+            continue;
+
+        immutable lower = baseName(arg).toLower;
+        if (lower == "modelviewer.exe" || lower == "modelviewer")
+            continue;
+
+        return arg;
+    }
 
     return buildPath(thisExePath().dirName, "../data/cube.geo.xml");
 }
