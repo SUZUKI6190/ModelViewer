@@ -98,6 +98,34 @@ dub run --config=application -- data\cube.geo.xml
 | `cmake` が見つからない | CMake をインストールし PATH に追加 |
 | ImGui / cimgui ビルド失敗 | VS Developer PowerShell から同じコマンドを再実行 |
 
+### Visual Studio / VisualD（コード編集・デバッグ）
+
+dub プロジェクトから VisualD ソリューションを生成できます。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\generate-visuald.ps1
+```
+
+生成物:
+
+- `modelviewer.sln` … Visual Studio ソリューション
+- `.dub\*.visualdproj` … VisualD プロジェクト（依存 lib 含む）
+
+**必要なもの:** Visual Studio 2019/2022 + [VisualD](https://github.com/dlang/visuald) 拡張 + LDC（推奨）
+
+**推奨ワークフロー**
+
+| 操作 | コマンド |
+|------|---------|
+| ビルド・実行（確実） | `dub build` / `dub run` |
+| コード編集・ブレークポイント | `generate-visuald.ps1` → VS で `modelviewer.sln` を開く |
+
+**注意**
+
+- `dub.json` を変更したら `generate-visuald.ps1` を再実行してください。
+- VisualD のビルドは dub の `preBuildCommands` を自動反映しないため、スクリプト内で `imgui_helper.cpp` を先にコンパイルします。
+- パーサのみのソリューション: `generate-visuald.ps1 -Config parser-test`
+
 ---
 
 ## プロジェクト構成
@@ -117,6 +145,8 @@ scripts/
   setup-bindbc-imgui.sh      Linux セットアップ
   setup-bindbc-imgui.ps1     Windows セットアップ
   compile-imgui-helper.bat   Windows 用 C++ ヘルパコンパイル
+  generate-visuald.sh        VisualD ソリューション生成（Linux ホスト）
+  generate-visuald.ps1       VisualD ソリューション生成（Windows）
 data/
   cube.geo.xml    サンプルモデル
 ```
