@@ -5,21 +5,14 @@
 	"license": "MIT",
 	"targetPath": "bin",
 	"sourcePaths": [
-		"source",
-		"source/c"
+		"source"
 	],
 	"dependencies": {
-		"bindbc-glfw": "~>0.13.0",
-		"bindbc-opengl": "~>0.13.0",
-		"bindbc-imgui": "0.7.0",
+		"dlangui": "~>0.10.8",
 		"gl3n": "~>1.4.1",
 		"dxml": "~>0.4.5"
 	},
-	"subConfigurations": {
-		"bindbc-imgui": "static_dynamicCRT"
-	},
 	"versions": [
-		"GLFW_33",
 		"GL_33",
 		"USE_GL3"
 	],
@@ -27,23 +20,7 @@
 		{
 			"name": "application",
 			"targetType": "executable",
-			"mainSourceFile": "source/app.d",
-			"importPaths": [
-				"deps/cimgui"
-			],
-			"excludedSourceFiles": [
-				"$PACKAGE_DIR/source/bindbc/imgui/ogl.d"
-			],
-			"preBuildCommands-linux-x86_64": [
-				"g++-13 -c -Ideps/cimgui -o source/c/imgui_helper.o source/c/imgui_helper.cpp"
-			],
-			"sourceFiles-linux-x86_64": [
-				"source/c/imgui_helper.o"
-			],
-			"libs-linux": [
-				"sdl2",
-				"freetype"
-			]
+			"mainSourceFile": "source/app.d"
 		},
 		{
 			"name": "parser-test",
