@@ -46,6 +46,8 @@ class ViewportWidget : Widget
         _onGpuStateChanged = onGpuStateChanged;
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
+        layoutWeight = 1;
+        minWidth = 1;
         backgroundDrawable = DrawableRef(new OpenGLDrawable(&drawScene));
     }
 
@@ -175,7 +177,10 @@ class ViewportWidget : Widget
     private void drawScene(Rect windowRect, Rect rc)
     {
         if (rc.width <= 0 || rc.height <= 0)
+        {
+            Log.w("Viewport draw skipped: zero size ", rc);
             return;
+        }
 
         if (!ensureGpuResources())
             return;
