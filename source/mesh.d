@@ -21,7 +21,7 @@ struct Mesh
 
     bool upload(const(GeoModel) model)
     {
-        destroy();
+        destroyGpu();
 
         MeshVertex[] vertices;
         vertices.length = model.vertexCount;
@@ -82,7 +82,17 @@ struct Mesh
         glBindVertexArray(0);
     }
 
-    void destroy()
+    /// Drop host-side handles without calling OpenGL (safe when no GL context is current).
+    void release()
+    {
+        vao = 0;
+        vbo = 0;
+        ebo = 0;
+        indexCount = 0;
+    }
+
+    /// Delete GPU resources. Must be called only while an OpenGL context is current.
+    void destroyGpu()
     {
         if (ebo != 0)
         {
@@ -100,6 +110,12 @@ struct Mesh
             vao = 0;
         }
         indexCount = 0;
+    }
+
+    /// Backwards-compatible alias for CPU-side release.
+    void destroy()
+    {
+        release();
     }
 
     private static float[9] extractNormalMatrix(mat4 modelMatrix)
