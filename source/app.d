@@ -27,6 +27,7 @@ struct AppState
     ArcballCamera camera;
     string modelPath;
     string loadError;
+    bool meshGpuDirty;
 }
 
 class ViewportWidget : Widget
@@ -76,6 +77,12 @@ class ViewportWidget : Widget
             }
         }
 
+        if (_state.meshGpuDirty)
+        {
+            _state.mesh.destroyGpu();
+            _state.meshGpuDirty = false;
+        }
+
         if (_state.model.vertexCount > 0 && _state.mesh.vao == 0)
         {
             if (!_state.mesh.upload(_state.model))
@@ -86,6 +93,7 @@ class ViewportWidget : Widget
             }
         }
 
+        reportGpuStateOnce();
         return true;
     }
 
@@ -191,6 +199,9 @@ class ViewportWidget : Widget
         _state.mesh.draw(*_shader, modelMatrix, mvpMatrix);
 
         glDisable(GL_DEPTH_TEST);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glViewport(0, 0, windowRect.width, windowRect.height);
     }
 }
 
@@ -205,6 +216,7 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _nameText;
     TextWidget _vertexText;
     TextWidget _triangleText;
+    VerticalLayout _panel;
     ViewportWidget _viewport;
 
     this(Window window, AppState* state)
@@ -216,10 +228,12 @@ class ModelViewerWidget : HorizontalLayout
         layoutHeight = FILL_PARENT;
 
         auto panel = new VerticalLayout("panel");
+        _panel = panel;
         panel.layoutWidth = 320;
         panel.layoutHeight = FILL_PARENT;
         panel.margins = Rect(12, 12, 12, 12);
         panel.padding = Rect(8, 8, 8, 8);
+        panel.backgroundColor = 0xFFF2F2F2u;
 
         auto title = new TextWidget("title", "Geo XML Viewer"d);
         title.fontSize = 18;
@@ -277,13 +291,13 @@ class ModelViewerWidget : HorizontalLayout
             writeln("Loaded: ", _state.model.name, " (", _state.model.vertexCount,
                 " vertices, ", _state.model.triangleCount, " triangles)");
 
-        updateModelInfo();
+        refreshUi();
     }
 
     ~this()
     {
-        _shader.destroy();
-        _state.mesh.destroy();
+        _state.mesh.release();
+        _shader.program = 0;
     }
 
     override bool onKeyEvent(KeyEvent event)
@@ -296,9 +310,17 @@ class ModelViewerWidget : HorizontalLayout
         return super.onKeyEvent(event);
     }
 
-    private void onGpuStateChanged()
+    private void refreshUi()
     {
         updateModelInfo();
+        _panel.requestLayout();
+        requestLayout();
+        _window.update(true);
+    }
+
+    private void onGpuStateChanged()
+    {
+        refreshUi();
     }
 
     private bool onLoadClicked(Widget)
@@ -306,12 +328,11 @@ class ModelViewerWidget : HorizontalLayout
         _state.modelPath = _pathEdit.text.to!string;
         _viewport.resetGpuState();
         if (!tryLoadModel())
-            writeln("Load failed: ", _state.loadError);
+            Log.w("Load failed: ", _state.loadError);
         else
-            writeln("Loaded: ", _state.model.name);
+            Log.i("Loaded: ", _state.model.name);
 
-        updateModelInfo();
-        _viewport.invalidate();
+        refreshUi();
         return true;
     }
 
@@ -319,7 +340,8 @@ class ModelViewerWidget : HorizontalLayout
     {
         try
         {
-            _state.mesh.destroy();
+            _state.mesh.release();
+            _state.meshGpuDirty = true;
             _state.model = parseGeoFile(_state.modelPath);
 
             gl3n.linalg.vec3 minBound;
@@ -380,10 +402,25 @@ private string defaultModelPath(string[] args)
         if (lower == "modelviewer.exe" || lower == "modelviewer")
             continue;
 
+        if (exists(arg))
+            return absolutePath(arg);
         return arg;
     }
 
-    return buildPath(thisExePath().dirName, "../data/cube.geo.xml");
+    immutable exeDir = thisExePath().dirName;
+    string[] candidates = [
+        buildPath(exeDir, "../data/cube.geo.xml"),
+        buildPath(exeDir, "data/cube.geo.xml"),
+        buildPath(getcwd(), "data/cube.geo.xml"),
+    ];
+
+    foreach (candidate; candidates)
+    {
+        if (exists(candidate))
+            return absolutePath(candidate);
+    }
+
+    return absolutePath(candidates[0]);
 }
 
 /// entry point for dlangui based application
@@ -406,5 +443,6 @@ extern (C) int UIAppMain(string[] args)
     }
 
     window.show();
+    window.update(true);
     return Platform.instance.enterMessageLoop();
 }
