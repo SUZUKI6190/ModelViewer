@@ -37,8 +37,14 @@
 			"preBuildCommands-linux-x86_64": [
 				"g++-13 -c -Ideps/cimgui -o source/c/imgui_helper.o source/c/imgui_helper.cpp"
 			],
+			"preBuildCommands-windows-x86_64": [
+				"scripts\\compile-imgui-helper.bat"
+			],
 			"sourceFiles-linux-x86_64": [
 				"source/c/imgui_helper.o"
+			],
+			"sourceFiles-windows-x86_64": [
+				"source/c/imgui_helper.obj"
 			],
 			"libs-linux": [
 				"sdl2",
