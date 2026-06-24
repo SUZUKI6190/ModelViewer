@@ -1,6 +1,5 @@
 module app;
 
-import std.algorithm;
 import std.conv;
 import std.exception;
 import std.file;
@@ -8,21 +7,18 @@ import std.path;
 import std.stdio;
 import std.string;
 
-import bindbc.glfw;
 import bindbc.opengl;
-import bindbc.imgui.bind.imgui;
-import bindbc.imgui.dynload;
-
-import gl3n.linalg;
+import dlangui;
+import dlangui.graphics.resources;
+static import gl3n.linalg;
 
 import camera;
 import geo_model;
 import geo_parser;
-import imgui_helper;
-import imgui_input;
-import imgui_ogl;
 import mesh;
 import shader;
+
+mixin APP_ENTRY_POINT;
 
 struct AppState
 {
@@ -31,163 +27,294 @@ struct AppState
     ArcballCamera camera;
     string modelPath;
     string loadError;
-    char[512] pathBuffer;
 }
 
-extern(C) void glfw_error_callback(int code, const(char)* description) nothrow @nogc
+class ViewportWidget : Widget
 {
-}
+    AppState* _state;
+    ShaderProgram* _shader;
 
-void main(string[] args)
-{
-    AppState state;
-    state.modelPath = defaultModelPath(args);
-    state.pathBuffer[] = 0;
-    if (state.modelPath.length < state.pathBuffer.length)
-        state.pathBuffer[0 .. state.modelPath.length] = state.modelPath;
-
-    if (loadGLFW() == GLFWSupport.noLibrary)
+    this(AppState* state, ShaderProgram* shader)
     {
-        writeln("Failed to load GLFW");
-        return;
+        super("viewport");
+        _state = state;
+        _shader = shader;
+        layoutWidth = FILL_PARENT;
+        layoutHeight = FILL_PARENT;
+        backgroundDrawable = DrawableRef(new OpenGLDrawable(&drawScene));
     }
 
-    glfwSetErrorCallback(&glfw_error_callback);
-    if (!glfwInit())
+    override bool onMouseEvent(MouseEvent event)
     {
-        writeln("Failed to initialize GLFW");
-        return;
-    }
-    scope (exit) glfwTerminate();
+        auto viewport = gl3n.linalg.vec2(cast(float)width, cast(float)height);
+        auto mousePos = gl3n.linalg.vec2(cast(float)event.x, cast(float)event.y);
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_SAMPLES, 4);
-
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "ModelViewer - Geo XML", null, null);
-    if (window is null)
-    {
-        writeln("Failed to create GLFW window");
-        return;
-    }
-    scope (exit) glfwDestroyWindow(window);
-
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
-
-    if (loadOpenGL() == GLSupport.noContext)
-    {
-        writeln("Failed to load OpenGL");
-        return;
-    }
-
-    version (BindImGui_Dynamic)
-    {
-        import bindbc.imgui.config : ImGuiSupport;
-        auto imguiSupport = loadImGui();
-        if (imguiSupport == ImGuiSupport.noLibrary || imguiSupport == ImGuiSupport.badLibrary)
+        switch (event.action)
         {
-            writeln("Failed to load ImGui: ", imguiSupport);
+        case MouseAction.Wheel:
+            _state.camera.registerScroll(cast(float)event.wheelDelta);
+            invalidate();
+            return true;
+
+        case MouseAction.ButtonDown:
+            beginCameraDrag(event, mousePos, viewport);
+            invalidate();
+            return true;
+
+        case MouseAction.Move:
+            if (_state.camera.dragging)
+            {
+                _state.camera.updateDrag(mousePos, viewport);
+                invalidate();
+            }
+            return true;
+
+        case MouseAction.ButtonUp:
+            _state.camera.resetDrag();
+            invalidate();
+            return true;
+
+        default:
+            return false;
+        }
+    }
+
+    override bool onKeyEvent(KeyEvent event)
+    {
+        if (event.action != KeyAction.KeyDown)
+            return false;
+
+        if (event.keyCode == KeyCode.KEY_R)
+        {
+            gl3n.linalg.vec3 minBound;
+            gl3n.linalg.vec3 maxBound;
+            _state.model.computeBounds(minBound, maxBound);
+            _state.camera.fitToBounds(minBound, maxBound);
+            invalidate();
+            return true;
+        }
+
+        return false;
+    }
+
+    private void beginCameraDrag(MouseEvent event, gl3n.linalg.vec2 mousePos, gl3n.linalg.vec2 viewport)
+    {
+        bool shiftDown = (event.flags & MouseFlag.Shift) != 0;
+        DragMode mode;
+        if (shiftDown)
+            mode = DragMode.fastPan;
+        else if (event.button == MouseButton.Right)
+            mode = DragMode.pan;
+        else if (event.button == MouseButton.Left)
+            mode = DragMode.rotate;
+        else
+            return;
+
+        _state.camera.beginDrag(mode, mousePos, viewport);
+    }
+
+    private void drawScene(Rect windowRect, Rect rc)
+    {
+        if (rc.width <= 0 || rc.height <= 0)
+            return;
+
+        float scrollDelta = _state.camera.consumeScrollPending();
+        if (scrollDelta != 0.0f)
+            _state.camera.zoom(scrollDelta);
+
+        glViewport(rc.left, windowRect.height - rc.bottom, rc.width, rc.height);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_MULTISAMPLE);
+        glClearColor(0.12f, 0.14f, 0.18f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        gl3n.linalg.mat4 modelMatrix = gl3n.linalg.mat4.identity;
+        gl3n.linalg.mat4 viewMatrix = _state.camera.viewMatrix();
+        gl3n.linalg.mat4 projectionMatrix = _state.camera.projectionMatrix(
+            cast(float)rc.width, cast(float)rc.height);
+        gl3n.linalg.mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
+
+        _state.mesh.draw(*_shader, modelMatrix, mvpMatrix);
+
+        glDisable(GL_DEPTH_TEST);
+    }
+}
+
+class ModelViewerWidget : HorizontalLayout
+{
+    AppState* _state;
+    ShaderProgram _shader;
+    Window _window;
+
+    EditLine _pathEdit;
+    TextWidget _errorText;
+    TextWidget _nameText;
+    TextWidget _vertexText;
+    TextWidget _triangleText;
+    ViewportWidget _viewport;
+
+    this(Window window, AppState* state)
+    {
+        super("main");
+        _window = window;
+        _state = state;
+        layoutWidth = FILL_PARENT;
+        layoutHeight = FILL_PARENT;
+
+        auto panel = new VerticalLayout("panel");
+        panel.layoutWidth = 320;
+        panel.layoutHeight = FILL_PARENT;
+        panel.margins = Rect(12, 12, 12, 12);
+        panel.padding = Rect(8, 8, 8, 8);
+
+        auto title = new TextWidget("title", "Geo XML Viewer"d);
+        title.fontSize = 18;
+        title.fontWeight = FontWeight.Bold;
+        panel.addChild(title);
+
+        panel.addChild(new TextWidget("modelLabel", "Model"d));
+
+        _pathEdit = new EditLine("path");
+        _pathEdit.layoutWidth = FILL_PARENT;
+        _pathEdit.text = _state.modelPath.to!dstring;
+        panel.addChild(_pathEdit);
+
+        auto loadButton = new Button("load", "Load"d);
+        loadButton.click = &onLoadClicked;
+        panel.addChild(loadButton);
+
+        _errorText = new TextWidget("error");
+        _errorText.textColor = 0xFFFF5959u;
+        _errorText.visibility = Visibility.Gone;
+        panel.addChild(_errorText);
+
+        _nameText = new TextWidget("name");
+        _nameText.visibility = Visibility.Gone;
+        panel.addChild(_nameText);
+
+        _vertexText = new TextWidget("vertices");
+        _vertexText.visibility = Visibility.Gone;
+        panel.addChild(_vertexText);
+
+        _triangleText = new TextWidget("triangles");
+        _triangleText.visibility = Visibility.Gone;
+        panel.addChild(_triangleText);
+
+        auto spacer = new VSpacer();
+        spacer.layoutHeight = 12;
+        panel.addChild(spacer);
+
+        panel.addChild(new TextWidget("controlsTitle", "Controls"d));
+        panel.addChild(new TextWidget("ctrl1", "• Left drag: rotate (arcball)"d));
+        panel.addChild(new TextWidget("ctrl2", "• Right drag: pan"d));
+        panel.addChild(new TextWidget("ctrl3", "• Wheel: zoom"d));
+        panel.addChild(new TextWidget("ctrl4", "• Shift + drag: fast pan"d));
+        panel.addChild(new TextWidget("ctrl5", "• R: reset camera"d));
+        panel.addChild(new TextWidget("ctrl6", "• Esc: quit"d));
+
+        addChild(panel);
+
+        if (!_shader.compile(meshVertexShader, meshFragmentShader))
+            throw new Exception("Failed to compile shaders");
+
+        _viewport = new ViewportWidget(_state, &_shader);
+        addChild(_viewport);
+
+        if (!tryLoadModel())
+            writeln("Initial load warning: ", _state.loadError);
+        else
+            writeln("Loaded: ", _state.model.name, " (", _state.model.vertexCount,
+                " vertices, ", _state.model.triangleCount, " triangles)");
+
+        updateModelInfo();
+    }
+
+    ~this()
+    {
+        _shader.destroy();
+        _state.mesh.destroy();
+    }
+
+    override bool onKeyEvent(KeyEvent event)
+    {
+        if (event.action == KeyAction.KeyDown && event.keyCode == KeyCode.ESCAPE)
+        {
+            _window.close();
+            return true;
+        }
+        return super.onKeyEvent(event);
+    }
+
+    private bool onLoadClicked(Widget)
+    {
+        _state.modelPath = _pathEdit.text.to!string;
+        if (!tryLoadModel())
+            writeln("Load failed: ", _state.loadError);
+        else
+            writeln("Loaded: ", _state.model.name);
+
+        updateModelInfo();
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool tryLoadModel()
+    {
+        try
+        {
+            _state.mesh.destroy();
+            _state.model = parseGeoFile(_state.modelPath);
+
+            gl3n.linalg.vec3 minBound;
+            gl3n.linalg.vec3 maxBound;
+            _state.model.computeBounds(minBound, maxBound);
+            _state.camera.fitToBounds(minBound, maxBound);
+
+            if (!_state.mesh.upload(_state.model))
+            {
+                _state.loadError = "Failed to upload mesh to GPU";
+                return false;
+            }
+
+            _state.loadError = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _state.loadError = ex.msg;
+            return false;
+        }
+    }
+
+    private void updateModelInfo()
+    {
+        if (_state.loadError.length > 0)
+        {
+            _errorText.text = ("Error: " ~ _state.loadError).to!dstring;
+            _errorText.visibility = Visibility.Visible;
+            _nameText.visibility = Visibility.Gone;
+            _vertexText.visibility = Visibility.Gone;
+            _triangleText.visibility = Visibility.Gone;
             return;
         }
-        scope (exit) unloadImGui();
-    }
 
-    igCreateContext(null);
-    scope (exit) igDestroyContext(null);
-    igStyleColorsDark(null);
+        _errorText.visibility = Visibility.Gone;
 
-    ImGuiOpenGLBackend.init("#version 330");
-    scope (exit) ImGuiOpenGLBackend.shutdown();
-
-    installImGuiInput(window);
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_MULTISAMPLE);
-    glClearColor(0.12f, 0.14f, 0.18f, 1.0f);
-
-    if (!tryLoadModel(state))
-        writeln("Initial load warning: ", state.loadError);
-    else
-        writeln("Loaded: ", state.model.name, " (", state.model.vertexCount, " vertices, ",
-            state.model.triangleCount, " triangles)");
-
-    ShaderProgram shader;
-    if (!shader.compile(meshVertexShader, meshFragmentShader))
-    {
-        writeln("Failed to compile shaders");
-        return;
-    }
-    scope (exit) shader.destroy();
-    scope (exit) state.mesh.destroy();
-
-    double lastFrameTime = glfwGetTime();
-
-    while (!glfwWindowShouldClose(window))
-    {
-        glfwPollEvents();
-
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            break;
-
-        double currentTime = glfwGetTime();
-        float deltaTime = cast(float)(currentTime - lastFrameTime);
-        lastFrameTime = currentTime;
-        if (deltaTime <= 0.0f)
-            deltaTime = 1.0f / 60.0f;
-
-        int width;
-        int height;
-        glfwGetFramebufferSize(window, &width, &height);
-        if (width == 0 || height == 0)
-            continue;
-
-        imguiNewFrameFromGlfw(window, cast(float)width, cast(float)height, deltaTime);
-        ImGuiOpenGLBackend.new_frame();
-        igNewFrame();
-
-        drawUiPanel(state);
-
-        igRender();
-        ImDrawData* drawData = igGetDrawData();
-
-        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
+        if (_state.model.name.length > 0)
         {
-            vec3 minBound;
-            vec3 maxBound;
-            state.model.computeBounds(minBound, maxBound);
-            state.camera.fitToBounds(minBound, maxBound);
-        }
-
-        bool imguiCapturesMouse = mv_imgui_want_capture_mouse() != 0;
-        if (!imguiCapturesMouse)
-        {
-            updateCameraInput(window, state.camera, cast(float)width, cast(float)height);
-            state.camera.registerScroll(consumeGlfwScroll());
+            _nameText.text = ("Name: " ~ _state.model.name).to!dstring;
+            _vertexText.text = ("Vertices: " ~ _state.model.vertexCount.to!string).to!dstring;
+            _triangleText.text = ("Triangles: " ~ _state.model.triangleCount.to!string).to!dstring;
+            _nameText.visibility = Visibility.Visible;
+            _vertexText.visibility = Visibility.Visible;
+            _triangleText.visibility = Visibility.Visible;
         }
         else
         {
-            consumeGlfwScroll();
+            _nameText.visibility = Visibility.Gone;
+            _vertexText.visibility = Visibility.Gone;
+            _triangleText.visibility = Visibility.Gone;
         }
-
-        float scrollDelta = state.camera.consumeScrollPending();
-        if (scrollDelta != 0.0f)
-            state.camera.zoom(scrollDelta);
-
-        mat4 modelMatrix = mat4.identity;
-        mat4 viewMatrix = state.camera.viewMatrix();
-        mat4 projectionMatrix = state.camera.projectionMatrix(cast(float)width, cast(float)height);
-        mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
-
-        glViewport(0, 0, width, height);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        state.mesh.draw(shader, modelMatrix, mvpMatrix);
-
-        ImGuiOpenGLBackend.render_draw_data(drawData);
-
-        glfwSwapBuffers(window);
     }
 }
 
@@ -199,102 +326,25 @@ private string defaultModelPath(string[] args)
     return buildPath(thisExePath().dirName, "../data/cube.geo.xml");
 }
 
-private bool tryLoadModel(ref AppState state)
+/// entry point for dlangui based application
+extern (C) int UIAppMain(string[] args)
 {
+    AppState state;
+    state.modelPath = defaultModelPath(args);
+
+    Window window = Platform.instance.createWindow(
+        "ModelViewer - Geo XML", null, WindowFlag.Resizable, 1280, 720);
+
     try
     {
-        state.mesh.destroy();
-        state.model = parseGeoFile(state.modelPath);
-
-        vec3 minBound;
-        vec3 maxBound;
-        state.model.computeBounds(minBound, maxBound);
-        state.camera.fitToBounds(minBound, maxBound);
-
-        if (!state.mesh.upload(state.model))
-        {
-            state.loadError = "Failed to upload mesh to GPU";
-            return false;
-        }
-
-        state.loadError = "";
-        return true;
+        window.mainWidget = new ModelViewerWidget(window, &state);
     }
     catch (Exception ex)
     {
-        state.loadError = ex.msg;
-        return false;
-    }
-}
-
-private void drawUiPanel(ref AppState state)
-{
-    igBegin("Geo XML Viewer", null, ImGuiWindowFlags.None);
-
-    igText("Model".ptr);
-    igInputText("Path".ptr, state.pathBuffer.ptr, state.pathBuffer.length,
-        ImGuiInputTextFlags.None, null, null);
-    if (igButton("Load".ptr))
-    {
-        state.modelPath = state.pathBuffer.fromStringz.idup;
-        if (!tryLoadModel(state))
-            writeln("Load failed: ", state.loadError);
-        else
-            writeln("Loaded: ", state.model.name);
+        writeln("Failed to initialize application: ", ex.msg);
+        return 1;
     }
 
-    if (state.loadError.length > 0)
-        igTextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), ("Error: " ~ state.loadError).ptr);
-    else if (state.model.name.length > 0)
-    {
-        igSeparator();
-        igText(("Name: " ~ state.model.name).ptr);
-        igText(("Vertices: " ~ state.model.vertexCount.to!string).ptr);
-        igText(("Triangles: " ~ state.model.triangleCount.to!string).ptr);
-    }
-
-    igSeparator();
-    igText("Controls".ptr);
-    igBulletText("Left drag: rotate (arcball)".ptr);
-    igBulletText("Right drag: pan".ptr);
-    igBulletText("Wheel: zoom".ptr);
-    igBulletText("Shift + drag: fast pan".ptr);
-    igBulletText("R: reset camera".ptr);
-    igBulletText("Esc: quit".ptr);
-
-    igEnd();
-}
-
-private void updateCameraInput(GLFWwindow* window, ref ArcballCamera camera, float width, float height)
-{
-    double cursorX;
-    double cursorY;
-    glfwGetCursorPos(window, &cursorX, &cursorY);
-    vec2 mousePos = vec2(cast(float)cursorX, cast(float)cursorY);
-    vec2 viewport = vec2(width, height);
-
-    bool shiftDown = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
-        || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-    bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    bool rightDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-
-    if (leftDown || rightDown)
-    {
-        DragMode mode;
-        if (shiftDown)
-            mode = DragMode.fastPan;
-        else if (rightDown)
-            mode = DragMode.pan;
-        else
-            mode = DragMode.rotate;
-
-        if (!camera.dragging || camera.dragMode != mode)
-            camera.beginDrag(mode, mousePos, viewport);
-        else
-            camera.updateDrag(mousePos, viewport);
-    }
-    else
-    {
-        camera.resetDrag();
-    }
+    window.show();
+    return Platform.instance.enterMessageLoop();
 }
