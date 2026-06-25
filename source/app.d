@@ -9,6 +9,7 @@ import std.string;
 
 import bindbc.opengl;
 import dlangui;
+import dlangui.graphics.glsupport : GLProgram, VAO;
 import dlangui.graphics.resources;
 static import gl3n.linalg;
 
@@ -229,6 +230,10 @@ class ViewportWidget : Widget
 
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
+        glDisable(GL_MULTISAMPLE);
+
+        VAO.unbind();
+        GLProgram.unbind();
     }
 }
 

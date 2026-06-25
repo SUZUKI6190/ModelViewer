@@ -3,3 +3,4 @@ bin/
 source/c/*.o
 libs/
 deps/
+*.log
