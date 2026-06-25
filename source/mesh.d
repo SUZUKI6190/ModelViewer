@@ -12,110 +12,253 @@ struct MeshVertex
     float[3] normal;
 }
 
-struct Mesh
+struct LineVertex
+{
+    float[3] position;
+}
+
+private struct TriangleGpuBatch
 {
     GLuint vao;
     GLuint vbo;
     GLuint ebo;
     GLsizei indexCount;
+}
+
+private struct LineGpuBatch
+{
+    GLuint vao;
+    GLuint vbo;
+    GLuint ebo;
+    GLsizei indexCount;
+    GLenum mode;
+    float[3] color;
+    float width;
+}
+
+struct GeoMesh
+{
+    private TriangleGpuBatch[] _triangles;
+    private LineGpuBatch[] _lines;
+    private bool _uploaded;
+
+    @property bool uploaded() const
+    {
+        return _uploaded;
+    }
 
     bool upload(const(GeoModel) model)
     {
         destroyGpu();
 
-        MeshVertex[] vertices;
-        vertices.length = model.vertexCount;
-
-        for (size_t i = 0; i < model.vertexCount; ++i)
+        foreach (batch; model.triangles)
         {
-            size_t base = i * 3;
-            vertices[i].position = [
-                model.vertices[base],
-                model.vertices[base + 1],
-                model.vertices[base + 2]
-            ];
-            vertices[i].normal = [
-                model.normals[base],
-                model.normals[base + 1],
-                model.normals[base + 2]
-            ];
+            if (batch.vertexCount == 0 || batch.indices.length == 0)
+                continue;
+
+            TriangleGpuBatch gpu;
+            MeshVertex[] vertices;
+            vertices.length = batch.vertexCount;
+
+            for (size_t i = 0; i < batch.vertexCount; ++i)
+            {
+                size_t base = i * 3;
+                vertices[i].position = [
+                    batch.vertices[base],
+                    batch.vertices[base + 1],
+                    batch.vertices[base + 2]
+                ];
+                vertices[i].normal = [
+                    batch.normals[base],
+                    batch.normals[base + 1],
+                    batch.normals[base + 2]
+                ];
+            }
+
+            gpu.indexCount = cast(GLsizei)(batch.indices.length);
+
+            glGenVertexArrays(1, &gpu.vao);
+            glGenBuffers(1, &gpu.vbo);
+            glGenBuffers(1, &gpu.ebo);
+
+            glBindVertexArray(gpu.vao);
+
+            glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+            glBufferData(GL_ARRAY_BUFFER, vertices.length * MeshVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
+
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, batch.indices.length * uint.sizeof, batch.indices.ptr, GL_STATIC_DRAW);
+
+            enum stride = MeshVertex.sizeof;
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 3));
+            glEnableVertexAttribArray(1);
+
+            glBindVertexArray(0);
+            _triangles ~= gpu;
         }
 
-        indexCount = cast(GLsizei)(model.indices.length);
+        foreach (batch; model.lines)
+        {
+            if (batch.vertexCount == 0 || batch.indices.length == 0)
+                continue;
 
-        glGenVertexArrays(1, &vao);
-        glGenBuffers(1, &vbo);
-        glGenBuffers(1, &ebo);
+            LineGpuBatch gpu;
+            LineVertex[] vertices;
+            vertices.length = batch.vertexCount;
 
-        glBindVertexArray(vao);
+            for (size_t i = 0; i < batch.vertexCount; ++i)
+            {
+                size_t base = i * 3;
+                vertices[i].position = [
+                    batch.vertices[base],
+                    batch.vertices[base + 1],
+                    batch.vertices[base + 2]
+                ];
+            }
 
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, vertices.length * MeshVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
+            gpu.indexCount = cast(GLsizei)(batch.indices.length);
+            gpu.color = batch.color;
+            gpu.width = batch.width;
+            final switch (batch.topology)
+            {
+            case LineTopology.segments:
+                gpu.mode = GL_LINES;
+                break;
+            case LineTopology.strip:
+                gpu.mode = GL_LINE_STRIP;
+                break;
+            case LineTopology.loop:
+                gpu.mode = GL_LINE_LOOP;
+                break;
+            }
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, model.indices.length * uint.sizeof, model.indices.ptr, GL_STATIC_DRAW);
+            glGenVertexArrays(1, &gpu.vao);
+            glGenBuffers(1, &gpu.vbo);
+            glGenBuffers(1, &gpu.ebo);
 
-        enum stride = MeshVertex.sizeof;
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 3));
-        glEnableVertexAttribArray(1);
+            glBindVertexArray(gpu.vao);
 
-        glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+            glBufferData(GL_ARRAY_BUFFER, vertices.length * LineVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
+
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, batch.indices.length * uint.sizeof, batch.indices.ptr, GL_STATIC_DRAW);
+
+            enum stride = LineVertex.sizeof;
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
+            glEnableVertexAttribArray(0);
+
+            glBindVertexArray(0);
+            _lines ~= gpu;
+        }
+
+        _uploaded = _triangles.length > 0 || _lines.length > 0;
         return true;
     }
 
-    void draw(ShaderProgram shader, mat4 modelMatrix, mat4 mvpMatrix) const
+    void draw(
+        ShaderProgram meshShader,
+        ShaderProgram lineShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix) const
     {
-        if (vao == 0 || indexCount == 0)
-            return;
+        foreach (batch; _triangles)
+        {
+            if (batch.vao == 0 || batch.indexCount == 0)
+                continue;
 
-        shader.use();
-        glUniformMatrix4fv(shader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
-        glUniformMatrix4fv(shader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+            meshShader.use();
+            glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+            glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
 
-        float[9] normalMatrix = extractNormalMatrix(modelMatrix);
-        glUniformMatrix3fv(shader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
+            float[9] normalMatrix = extractNormalMatrix(modelMatrix);
+            glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
 
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, null);
-        glBindVertexArray(0);
+            glBindVertexArray(batch.vao);
+            glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
+            glBindVertexArray(0);
+        }
+
+        foreach (batch; _lines)
+        {
+            if (batch.vao == 0 || batch.indexCount == 0)
+                continue;
+
+            lineShader.use();
+            glUniformMatrix4fv(lineShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+            glUniform3fv(lineShader.location("uColor"), 1, batch.color.ptr);
+
+            glLineWidth(batch.width);
+
+            glBindVertexArray(batch.vao);
+            glDrawElements(batch.mode, batch.indexCount, GL_UNSIGNED_INT, null);
+            glBindVertexArray(0);
+        }
     }
 
-    /// Drop host-side handles without calling OpenGL (safe when no GL context is current).
     void release()
     {
-        vao = 0;
-        vbo = 0;
-        ebo = 0;
-        indexCount = 0;
+        _triangles = null;
+        _lines = null;
+        _uploaded = false;
     }
 
-    /// Delete GPU resources. Must be called only while an OpenGL context is current.
     void destroyGpu()
     {
-        if (ebo != 0)
-        {
-            glDeleteBuffers(1, &ebo);
-            ebo = 0;
-        }
-        if (vbo != 0)
-        {
-            glDeleteBuffers(1, &vbo);
-            vbo = 0;
-        }
-        if (vao != 0)
-        {
-            glDeleteVertexArrays(1, &vao);
-            vao = 0;
-        }
-        indexCount = 0;
+        foreach (ref batch; _triangles)
+            destroyTriangleBatch(batch);
+        foreach (ref batch; _lines)
+            destroyLineBatch(batch);
+        _triangles = null;
+        _lines = null;
+        _uploaded = false;
     }
 
-    /// Backwards-compatible alias for CPU-side release.
     void destroy()
     {
         release();
+    }
+
+    private static void destroyTriangleBatch(ref TriangleGpuBatch batch)
+    {
+        if (batch.ebo != 0)
+        {
+            glDeleteBuffers(1, &batch.ebo);
+            batch.ebo = 0;
+        }
+        if (batch.vbo != 0)
+        {
+            glDeleteBuffers(1, &batch.vbo);
+            batch.vbo = 0;
+        }
+        if (batch.vao != 0)
+        {
+            glDeleteVertexArrays(1, &batch.vao);
+            batch.vao = 0;
+        }
+        batch.indexCount = 0;
+    }
+
+    private static void destroyLineBatch(ref LineGpuBatch batch)
+    {
+        if (batch.ebo != 0)
+        {
+            glDeleteBuffers(1, &batch.ebo);
+            batch.ebo = 0;
+        }
+        if (batch.vbo != 0)
+        {
+            glDeleteBuffers(1, &batch.vbo);
+            batch.vbo = 0;
+        }
+        if (batch.vao != 0)
+        {
+            glDeleteVertexArrays(1, &batch.vao);
+            batch.vao = 0;
+        }
+        batch.indexCount = 0;
     }
 
     private static float[9] extractNormalMatrix(mat4 modelMatrix)

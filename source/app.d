@@ -23,7 +23,7 @@ mixin APP_ENTRY_POINT;
 struct AppState
 {
     GeoModel model;
-    Mesh mesh;
+    GeoMesh mesh;
     ArcballCamera camera;
     string modelPath;
     string loadError;
@@ -33,16 +33,22 @@ struct AppState
 class ViewportWidget : Widget
 {
     AppState* _state;
-    ShaderProgram* _shader;
+    ShaderProgram* _meshShader;
+    ShaderProgram* _lineShader;
     bool _shaderCompileFailed;
     void delegate() _onGpuStateChanged;
     bool _gpuStateReported;
 
-    this(AppState* state, ShaderProgram* shader, void delegate() onGpuStateChanged = null)
+    this(
+        AppState* state,
+        ShaderProgram* meshShader,
+        ShaderProgram* lineShader,
+        void delegate() onGpuStateChanged = null)
     {
         super("viewport");
         _state = state;
-        _shader = shader;
+        _meshShader = meshShader;
+        _lineShader = lineShader;
         _onGpuStateChanged = onGpuStateChanged;
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
@@ -73,12 +79,23 @@ class ViewportWidget : Widget
             return false;
         }
 
-        if (_shader.program == 0)
+        if (_meshShader.program == 0)
         {
-            if (!_shader.compile(meshVertexShader, meshFragmentShader))
+            if (!_meshShader.compile(meshVertexShader, meshFragmentShader))
             {
                 _shaderCompileFailed = true;
-                _state.loadError = "Failed to compile shaders";
+                _state.loadError = "Failed to compile mesh shaders";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+
+        if (_lineShader.program == 0)
+        {
+            if (!_lineShader.compile(lineVertexShader, lineFragmentShader))
+            {
+                _shaderCompileFailed = true;
+                _state.loadError = "Failed to compile line shaders";
                 reportGpuStateOnce();
                 return false;
             }
@@ -90,7 +107,7 @@ class ViewportWidget : Widget
             _state.meshGpuDirty = false;
         }
 
-        if (_state.model.vertexCount > 0 && _state.mesh.vao == 0)
+        if (_state.model.hasDrawableGeometry && !_state.mesh.uploaded)
         {
             if (!_state.mesh.upload(_state.model))
             {
@@ -208,7 +225,7 @@ class ViewportWidget : Widget
             cast(float)rc.width, cast(float)rc.height);
         gl3n.linalg.mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
 
-        _state.mesh.draw(*_shader, modelMatrix, mvpMatrix);
+        _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix);
 
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
@@ -218,7 +235,8 @@ class ViewportWidget : Widget
 class ModelViewerWidget : HorizontalLayout
 {
     AppState* _state;
-    ShaderProgram _shader;
+    ShaderProgram _meshShader;
+    ShaderProgram _lineShader;
     Window _window;
 
     EditLine _pathEdit;
@@ -226,6 +244,7 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _nameText;
     TextWidget _vertexText;
     TextWidget _triangleText;
+    TextWidget _lineText;
     VerticalLayout _panel;
     ViewportWidget _viewport;
 
@@ -280,6 +299,10 @@ class ModelViewerWidget : HorizontalLayout
         _triangleText.visibility = Visibility.Gone;
         panel.addChild(_triangleText);
 
+        _lineText = new TextWidget("lines");
+        _lineText.visibility = Visibility.Gone;
+        panel.addChild(_lineText);
+
         auto spacer = new VSpacer();
         spacer.layoutHeight = 12;
         panel.addChild(spacer);
@@ -294,14 +317,15 @@ class ModelViewerWidget : HorizontalLayout
 
         addChild(panel);
 
-        _viewport = new ViewportWidget(_state, &_shader, &onGpuStateChanged);
+        _viewport = new ViewportWidget(_state, &_meshShader, &_lineShader, &onGpuStateChanged);
         addChild(_viewport);
 
         if (!tryLoadModel())
             writeln("Initial load warning: ", _state.loadError);
         else
             writeln("Loaded: ", _state.model.name, " (", _state.model.vertexCount,
-                " vertices, ", _state.model.triangleCount, " triangles)");
+                " vertices, ", _state.model.triangleCount, " triangles, ",
+                _state.model.lineBatchCount, " line batches)");
 
         refreshUi();
     }
@@ -325,7 +349,8 @@ class ModelViewerWidget : HorizontalLayout
     ~this()
     {
         _state.mesh.release();
-        _shader.program = 0;
+        _meshShader.program = 0;
+        _lineShader.program = 0;
     }
 
     override bool onKeyEvent(KeyEvent event)
@@ -396,6 +421,7 @@ class ModelViewerWidget : HorizontalLayout
             _nameText.visibility = Visibility.Gone;
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
+            _lineText.visibility = Visibility.Gone;
             return;
         }
 
@@ -406,15 +432,18 @@ class ModelViewerWidget : HorizontalLayout
             _nameText.text = ("Name: " ~ _state.model.name).to!dstring;
             _vertexText.text = ("Vertices: " ~ _state.model.vertexCount.to!string).to!dstring;
             _triangleText.text = ("Triangles: " ~ _state.model.triangleCount.to!string).to!dstring;
+            _lineText.text = ("Line batches: " ~ _state.model.lineBatchCount.to!string).to!dstring;
             _nameText.visibility = Visibility.Visible;
             _vertexText.visibility = Visibility.Visible;
             _triangleText.visibility = Visibility.Visible;
+            _lineText.visibility = Visibility.Visible;
         }
         else
         {
             _nameText.visibility = Visibility.Gone;
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
+            _lineText.visibility = Visibility.Gone;
         }
     }
 }

@@ -9,4 +9,6 @@ void main()
     writeln("name=", model.name);
     writeln("vertices=", model.vertexCount);
     writeln("triangles=", model.triangleCount);
+    writeln("triangle_batches=", model.triangles.length);
+    writeln("line_batches=", model.lineBatchCount);
 }

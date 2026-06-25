@@ -130,3 +130,27 @@ void main()
     FragColor = vec4(color, 1.0);
 }
 };
+
+enum lineVertexShader = q{
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 uMVP;
+
+void main()
+{
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+};
+
+enum lineFragmentShader = q{
+#version 330 core
+uniform vec3 uColor;
+
+out vec4 FragColor;
+
+void main()
+{
+    FragColor = vec4(uColor, 1.0);
+}
+};

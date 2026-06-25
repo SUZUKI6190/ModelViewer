@@ -27,39 +27,132 @@ GeoModel parseGeoXml(string xmlText)
         throw new Exception("Geo element requires a name attribute");
 
     auto model = GeoModel(name);
-    model.vertices = parseFloatArray(getChildText(geo, "vertex"));
-    model.normals = parseFloatArray(getChildText(geo, "normal"));
-    model.colors = parseFloatArray(getChildText(geo, "color"));
-    model.uvs = parseFloatArray(getChildText(geo, "uv"));
-    model.indices = parseUIntArray(getChildText(geo, "indices"));
 
-    if (model.vertices.length == 0 || model.vertices.length % 3 != 0)
-        throw new Exception("Invalid vertex array");
-
-    if (model.indices.length == 0 || model.indices.length % 3 != 0)
-        throw new Exception("Invalid indices array");
-
-    if (model.normals.length == 0)
+    foreach (child; geo.children)
     {
-        model.normals.length = model.vertices.length;
-        for (size_t i = 0; i < model.vertexCount; ++i)
+        if (child.type != EntityType.elementStart && child.type != EntityType.elementEmpty)
+            continue;
+
+        switch (child.name)
         {
-            model.normals[i * 3 + 0] = 0.0f;
-            model.normals[i * 3 + 1] = 0.0f;
-            model.normals[i * 3 + 2] = 1.0f;
+        case "Triangle":
+            {
+                auto batch = tryParseTriangle(child);
+                if (batch.isValid)
+                    model.triangles ~= batch;
+            }
+            break;
+        case "Line":
+            {
+                auto batch = tryParseLine(child, LineTopology.segments);
+                if (batch.isValid)
+                    model.lines ~= batch;
+            }
+            break;
+        case "LineStripe":
+            {
+                auto batch = tryParseLine(child, LineTopology.strip);
+                if (batch.isValid)
+                    model.lines ~= batch;
+            }
+            break;
+        case "LineLoop":
+            {
+                auto batch = tryParseLine(child, LineTopology.loop);
+                if (batch.isValid)
+                    model.lines ~= batch;
+            }
+            break;
+        default:
+            break;
         }
     }
 
-    if (model.normals.length != model.vertices.length)
-        throw new Exception("Vertex and normal array lengths do not match");
+    return model;
+}
 
-    foreach (index; model.indices)
+private TriangleBatch tryParseTriangle(DOMEntity!string element)
+{
+    auto vertices = parseFloatArray(getChildText(element, "vertex"));
+    auto indices = parseUIntArray(getChildText(element, "indices"));
+
+    if (vertices.length == 0 || vertices.length % 3 != 0)
+        return TriangleBatch.init;
+    if (indices.length == 0 || indices.length % 3 != 0)
+        return TriangleBatch.init;
+
+    auto vertexCount = vertices.length / 3;
+    foreach (index; indices)
     {
-        if (index >= model.vertexCount)
-            throw new Exception("Index out of range: " ~ index.to!string);
+        if (index >= vertexCount)
+            return TriangleBatch.init;
     }
 
-    return model;
+    TriangleBatch batch;
+    batch.vertices = vertices;
+    batch.indices = indices;
+    batch.colors = parseFloatArray(getChildText(element, "color"));
+    batch.uvs = parseFloatArray(getChildText(element, "uv"));
+    batch.normals = parseFloatArray(getChildText(element, "normal"));
+
+    if (batch.normals.length == 0)
+    {
+        batch.normals.length = batch.vertices.length;
+        for (size_t i = 0; i < batch.vertexCount; ++i)
+        {
+            batch.normals[i * 3 + 0] = 0.0f;
+            batch.normals[i * 3 + 1] = 0.0f;
+            batch.normals[i * 3 + 2] = 1.0f;
+        }
+    }
+    else if (batch.normals.length != batch.vertices.length)
+    {
+        return TriangleBatch.init;
+    }
+
+    return batch;
+}
+
+private LineBatch tryParseLine(DOMEntity!string element, LineTopology topology)
+{
+    auto vertices = parseFloatArray(getChildText(element, "vertex"));
+    auto indices = parseUIntArray(getChildText(element, "indices"));
+
+    if (vertices.length == 0 || vertices.length % 3 != 0)
+        return LineBatch.init;
+    if (indices.length == 0)
+        return LineBatch.init;
+
+    final switch (topology)
+    {
+    case LineTopology.segments:
+        if (indices.length % 2 != 0)
+            return LineBatch.init;
+        break;
+    case LineTopology.strip:
+        if (indices.length < 2)
+            return LineBatch.init;
+        break;
+    case LineTopology.loop:
+        if (indices.length < 3)
+            return LineBatch.init;
+        break;
+    }
+
+    auto vertexCount = vertices.length / 3;
+    foreach (index; indices)
+    {
+        if (index >= vertexCount)
+            return LineBatch.init;
+    }
+
+    LineBatch batch;
+    batch.topology = topology;
+    batch.vertices = vertices;
+    batch.indices = indices;
+    batch.color = parseColor(getChildText(element, "color"));
+    batch.width = parseWidth(getChildText(element, "width"));
+    return batch;
 }
 
 private DOMEntity!string findGeoElement(DOMEntity!string doc)
@@ -138,4 +231,28 @@ private uint[] parseUIntArray(string text)
     }
 
     return values;
+}
+
+private float[3] parseColor(string text)
+{
+    enum defaultColor = [0.95f, 0.85f, 0.35f];
+    auto values = parseFloatArray(text);
+    if (values.length < 3)
+        return defaultColor;
+
+    float[3] color;
+    color[0] = values[0];
+    color[1] = values[1];
+    color[2] = values[2];
+    return color;
+}
+
+private float parseWidth(string text)
+{
+    auto trimmed = text.strip;
+    if (trimmed.length == 0)
+        return 1.0f;
+
+    auto width = to!float(trimmed);
+    return width > 0.0f ? width : 1.0f;
 }
