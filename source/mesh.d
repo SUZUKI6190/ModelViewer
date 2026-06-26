@@ -40,6 +40,7 @@ struct GeoMesh
 {
     private TriangleGpuBatch[] _triangles;
     private LineGpuBatch[] _lines;
+    private LineGpuBatch[] _normalLines;
     private bool _uploaded;
 
     @property bool uploaded() const
@@ -97,6 +98,75 @@ struct GeoMesh
 
             glBindVertexArray(0);
             _triangles ~= gpu;
+        }
+
+        vec3 minBound;
+        vec3 maxBound;
+        model.computeBounds(minBound, maxBound);
+        float normalLength = length(maxBound - minBound) * 0.05f;
+        if (normalLength <= 0.0f)
+            normalLength = 0.1f;
+
+        foreach (batch; model.triangles)
+        {
+            if (batch.vertexCount == 0)
+                continue;
+
+            LineGpuBatch gpu;
+            LineVertex[] vertices;
+            uint[] indices;
+            vertices.reserve(batch.vertexCount * 2);
+            indices.reserve(batch.vertexCount * 2);
+
+            for (size_t i = 0; i < batch.vertexCount; ++i)
+            {
+                size_t base = i * 3;
+                vec3 pos = vec3(
+                    batch.vertices[base],
+                    batch.vertices[base + 1],
+                    batch.vertices[base + 2]);
+                vec3 normal = vec3(
+                    batch.normals[base],
+                    batch.normals[base + 1],
+                    batch.normals[base + 2]);
+
+                float normalLen = length(normal);
+                if (normalLen > 1e-6f)
+                    normal /= normalLen;
+
+                vec3 end = pos + normal * normalLength;
+                uint segmentBase = cast(uint)vertices.length;
+                vertices ~= LineVertex([pos.x, pos.y, pos.z]);
+                vertices ~= LineVertex([end.x, end.y, end.z]);
+                indices ~= [segmentBase, segmentBase + 1];
+            }
+
+            if (vertices.length == 0 || indices.length == 0)
+                continue;
+
+            gpu.indexCount = cast(GLsizei)(indices.length);
+            gpu.color = [0.25f, 0.95f, 0.35f];
+            gpu.width = 1.5f;
+            gpu.mode = GL_LINES;
+
+            glGenVertexArrays(1, &gpu.vao);
+            glGenBuffers(1, &gpu.vbo);
+            glGenBuffers(1, &gpu.ebo);
+
+            glBindVertexArray(gpu.vao);
+
+            glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+            glBufferData(GL_ARRAY_BUFFER, vertices.length * LineVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
+
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.length * uint.sizeof, indices.ptr, GL_STATIC_DRAW);
+
+            enum stride = LineVertex.sizeof;
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
+            glEnableVertexAttribArray(0);
+
+            glBindVertexArray(0);
+            _normalLines ~= gpu;
         }
 
         foreach (batch; model.lines)
@@ -162,7 +232,8 @@ struct GeoMesh
         ShaderProgram meshShader,
         ShaderProgram lineShader,
         mat4 modelMatrix,
-        mat4 mvpMatrix) const
+        mat4 mvpMatrix,
+        bool showNormals = false) const
     {
         foreach (batch; _triangles)
         {
@@ -179,6 +250,25 @@ struct GeoMesh
             glBindVertexArray(batch.vao);
             glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
             glBindVertexArray(0);
+        }
+
+        if (showNormals)
+        {
+            foreach (batch; _normalLines)
+            {
+                if (batch.vao == 0 || batch.indexCount == 0)
+                    continue;
+
+                lineShader.use();
+                glUniformMatrix4fv(lineShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+                glUniform3fv(lineShader.location("uColor"), 1, batch.color.ptr);
+
+                glLineWidth(batch.width);
+
+                glBindVertexArray(batch.vao);
+                glDrawElements(batch.mode, batch.indexCount, GL_UNSIGNED_INT, null);
+                glBindVertexArray(0);
+            }
         }
 
         foreach (batch; _lines)
@@ -202,6 +292,7 @@ struct GeoMesh
     {
         _triangles = null;
         _lines = null;
+        _normalLines = null;
         _uploaded = false;
     }
 
@@ -211,8 +302,11 @@ struct GeoMesh
             destroyTriangleBatch(batch);
         foreach (ref batch; _lines)
             destroyLineBatch(batch);
+        foreach (ref batch; _normalLines)
+            destroyLineBatch(batch);
         _triangles = null;
         _lines = null;
+        _normalLines = null;
         _uploaded = false;
     }
 
