@@ -29,6 +29,7 @@ struct AppState
     string modelPath;
     string loadError;
     bool meshGpuDirty;
+    bool showNormals;
 }
 
 class ViewportWidget : Widget
@@ -226,7 +227,7 @@ class ViewportWidget : Widget
             cast(float)rc.width, cast(float)rc.height);
         gl3n.linalg.mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
 
-        _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix);
+        _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix, _state.showNormals);
 
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
@@ -250,6 +251,7 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _vertexText;
     TextWidget _triangleText;
     TextWidget _lineText;
+    CheckBox _showNormalsCheck;
     VerticalLayout _panel;
     ViewportWidget _viewport;
 
@@ -307,6 +309,12 @@ class ModelViewerWidget : HorizontalLayout
         _lineText = new TextWidget("lines");
         _lineText.visibility = Visibility.Gone;
         panel.addChild(_lineText);
+
+        _showNormalsCheck = new CheckBox("showNormals", "Show normals"d);
+        _showNormalsCheck.checked = _state.showNormals;
+        _showNormalsCheck.visibility = Visibility.Gone;
+        _showNormalsCheck.addOnCheckChangeListener(&onShowNormalsChanged);
+        panel.addChild(_showNormalsCheck);
 
         auto spacer = new VSpacer();
         spacer.layoutHeight = 12;
@@ -394,6 +402,13 @@ class ModelViewerWidget : HorizontalLayout
         return true;
     }
 
+    private bool onShowNormalsChanged(Widget, bool checked)
+    {
+        _state.showNormals = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
     private bool tryLoadModel()
     {
         try
@@ -427,6 +442,7 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
             _lineText.visibility = Visibility.Gone;
+            _showNormalsCheck.visibility = Visibility.Gone;
             return;
         }
 
@@ -442,6 +458,18 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Visible;
             _triangleText.visibility = Visibility.Visible;
             _lineText.visibility = Visibility.Visible;
+
+            if (_state.model.triangleCount > 0)
+            {
+                _showNormalsCheck.visibility = Visibility.Visible;
+                _showNormalsCheck.checked = _state.showNormals;
+            }
+            else
+            {
+                _state.showNormals = false;
+                _showNormalsCheck.checked = false;
+                _showNormalsCheck.visibility = Visibility.Gone;
+            }
         }
         else
         {
@@ -449,6 +477,7 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
             _lineText.visibility = Visibility.Gone;
+            _showNormalsCheck.visibility = Visibility.Gone;
         }
     }
 }
