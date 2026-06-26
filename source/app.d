@@ -13,6 +13,7 @@ import dlangui.graphics.glsupport : GLProgram, VAO;
 import dlangui.graphics.resources;
 static import gl3n.linalg;
 
+import axis_gizmo;
 import camera;
 import geo_model;
 import geo_parser;
@@ -31,6 +32,10 @@ struct AppState
     string loadError;
     bool meshGpuDirty;
     bool showNormals;
+    bool showWorldAxes = true;
+    bool showCornerAxes = true;
+    float axisLength = 1.0f;
+    bool axisGpuDirty = true;
 }
 
 class ViewportWidget : Widget
@@ -41,6 +46,7 @@ class ViewportWidget : Widget
     bool _shaderCompileFailed;
     void delegate() _onGpuStateChanged;
     bool _gpuStateReported;
+    AxisGizmo _axisGizmo;
 
     this(
         AppState* state,
@@ -120,6 +126,12 @@ class ViewportWidget : Widget
             }
         }
 
+        if (_state.axisGpuDirty || !_axisGizmo.uploaded)
+        {
+            _axisGizmo.upload(_state.axisLength);
+            _state.axisGpuDirty = false;
+        }
+
         reportGpuStateOnce();
         return true;
     }
@@ -128,6 +140,7 @@ class ViewportWidget : Widget
     {
         _gpuStateReported = false;
         _shaderCompileFailed = false;
+        _state.axisGpuDirty = true;
     }
 
     override bool onMouseEvent(MouseEvent event)
@@ -230,6 +243,29 @@ class ViewportWidget : Widget
 
         _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix, _state.showNormals);
 
+        if (_state.showWorldAxes)
+        {
+            gl3n.linalg.mat4 axisMvp = projectionMatrix * viewMatrix * modelMatrix;
+            _axisGizmo.drawWorld(*_lineShader, axisMvp);
+        }
+
+        if (_state.showCornerAxes)
+        {
+            enum gizmoSize = 96;
+            int gizmoX = rc.left;
+            int gizmoY = windowRect.height - rc.bottom;
+
+            glViewport(gizmoX, gizmoY, gizmoSize, gizmoSize);
+            glScissor(gizmoX, gizmoY, gizmoSize, gizmoSize);
+            glClear(GL_DEPTH_BUFFER_BIT);
+
+            gl3n.linalg.mat4 gizmoView = _state.camera.gizmoViewMatrix();
+            gl3n.linalg.mat4 gizmoProj = gl3n.linalg.mat4.orthographic(
+                -1.2f, 1.2f, -1.2f, 1.2f, 0.1f, 10.0f);
+            gl3n.linalg.mat4 gizmoMvp = gizmoProj * gizmoView;
+            _axisGizmo.drawCorner(*_lineShader, gizmoMvp);
+        }
+
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_MULTISAMPLE);
@@ -253,6 +289,8 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _triangleText;
     TextWidget _lineText;
     CheckBox _showNormalsCheck;
+    CheckBox _showWorldAxesCheck;
+    CheckBox _showCornerAxesCheck;
     VerticalLayout _panel;
     ViewportWidget _viewport;
 
@@ -316,6 +354,16 @@ class ModelViewerWidget : HorizontalLayout
         _showNormalsCheck.visibility = Visibility.Gone;
         _showNormalsCheck.addOnCheckChangeListener(&onShowNormalsChanged);
         panel.addChild(_showNormalsCheck);
+
+        _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
+        _showWorldAxesCheck.checked = _state.showWorldAxes;
+        _showWorldAxesCheck.addOnCheckChangeListener(&onShowWorldAxesChanged);
+        panel.addChild(_showWorldAxesCheck);
+
+        _showCornerAxesCheck = new CheckBox("showCornerAxes", "Show corner axes"d);
+        _showCornerAxesCheck.checked = _state.showCornerAxes;
+        _showCornerAxesCheck.addOnCheckChangeListener(&onShowCornerAxesChanged);
+        panel.addChild(_showCornerAxesCheck);
 
         auto spacer = new VSpacer();
         spacer.layoutHeight = 12;
@@ -410,6 +458,20 @@ class ModelViewerWidget : HorizontalLayout
         return true;
     }
 
+    private bool onShowWorldAxesChanged(Widget, bool checked)
+    {
+        _state.showWorldAxes = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onShowCornerAxesChanged(Widget, bool checked)
+    {
+        _state.showCornerAxes = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
     private bool tryLoadModel()
     {
         try
@@ -422,6 +484,10 @@ class ModelViewerWidget : HorizontalLayout
             gl3n.linalg.vec3 maxBound;
             _state.model.computeBounds(minBound, maxBound);
             _state.camera.fitToBounds(minBound, maxBound);
+
+            float axisLen = (maxBound - minBound).length * 0.2f;
+            _state.axisLength = axisLen > 1e-4f ? axisLen : 1.0f;
+            _state.axisGpuDirty = true;
 
             _state.loadError = "";
             saveLastModelPath(_state.modelPath);

@@ -68,6 +68,14 @@ struct ArcballCamera
         return mat4.perspective(width, height, 45.0f, 0.01f, maxDistance * 4.0f);
     }
 
+    /// View matrix for the corner orientation gizmo (rotation only, no pan).
+    mat4 gizmoViewMatrix(float eyeDistance = 2.5f) const
+    {
+        vec3 eye = orientation * vec3(0, 0, eyeDistance);
+        vec3 up = orientation * vec3(0, 1, 0);
+        return mat4.look_at(eye, vec3(0, 0, 0), up);
+    }
+
     void resetDrag()
     {
         dragging = false;
