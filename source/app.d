@@ -14,6 +14,7 @@ import dlangui.graphics.resources;
 static import gl3n.linalg;
 
 import axis_gizmo;
+import axis_label;
 import camera;
 import geo_model;
 import geo_parser;
@@ -47,6 +48,7 @@ class ViewportWidget : Widget
     void delegate() _onGpuStateChanged;
     bool _gpuStateReported;
     AxisGizmo _axisGizmo;
+    AxisLabelRenderer _axisLabels;
 
     this(
         AppState* state,
@@ -132,6 +134,13 @@ class ViewportWidget : Widget
             _state.axisGpuDirty = false;
         }
 
+        if (!_axisLabels.ensureGpu())
+        {
+            _state.loadError = "Failed to initialize axis labels";
+            reportGpuStateOnce();
+            return false;
+        }
+
         reportGpuStateOnce();
         return true;
     }
@@ -141,6 +150,7 @@ class ViewportWidget : Widget
         _gpuStateReported = false;
         _shaderCompileFailed = false;
         _state.axisGpuDirty = true;
+        _axisLabels.destroyGpu();
     }
 
     override bool onMouseEvent(MouseEvent event)
@@ -247,11 +257,13 @@ class ViewportWidget : Widget
         {
             gl3n.linalg.mat4 axisMvp = projectionMatrix * viewMatrix * modelMatrix;
             _axisGizmo.drawWorld(*_lineShader, axisMvp);
+            if (_axisLabels.ready)
+                _axisLabels.draw(axisMvp, _state.axisLength, rc.width, rc.height);
         }
 
         if (_state.showCornerAxes)
         {
-            enum gizmoSize = 96;
+            enum gizmoSize = cornerGizmoSize;
             int gizmoX = rc.left;
             int gizmoY = windowRect.height - rc.bottom;
 
@@ -264,6 +276,8 @@ class ViewportWidget : Widget
                 -1.2f, 1.2f, -1.2f, 1.2f, 0.1f, 10.0f);
             gl3n.linalg.mat4 gizmoMvp = gizmoProj * gizmoView;
             _axisGizmo.drawCorner(*_lineShader, gizmoMvp);
+            if (_axisLabels.ready)
+                _axisLabels.draw(gizmoMvp, cornerAxisLength, gizmoSize, gizmoSize);
         }
 
         glDisable(GL_SCISSOR_TEST);

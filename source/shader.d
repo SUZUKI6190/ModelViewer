@@ -154,3 +154,43 @@ void main()
     FragColor = vec4(uColor, 1.0);
 }
 };
+
+enum labelVertexShader = q{
+#version 330 core
+layout (location = 0) in vec2 aCorner;
+layout (location = 1) in vec2 aTex;
+
+uniform vec2 uOffset;
+uniform vec2 uSize;
+uniform vec2 uViewport;
+
+out vec2 vTex;
+
+void main()
+{
+    vec2 pixelPos = uOffset + aCorner * uSize;
+    vec2 ndc;
+    ndc.x = (pixelPos.x / uViewport.x) * 2.0 - 1.0;
+    ndc.y = (pixelPos.y / uViewport.y) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, -0.1, 1.0);
+    vTex = aTex;
+}
+};
+
+enum labelFragmentShader = q{
+#version 330 core
+in vec2 vTex;
+
+uniform sampler2D uTex;
+uniform vec3 uColor;
+
+out vec4 FragColor;
+
+void main()
+{
+    float alpha = texture(uTex, vTex).a;
+    if (alpha < 0.01)
+        discard;
+    FragColor = vec4(uColor, alpha);
+}
+};
