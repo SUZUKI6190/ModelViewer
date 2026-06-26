@@ -17,6 +17,7 @@ import camera;
 import geo_model;
 import geo_parser;
 import mesh;
+import settings;
 import shader;
 
 mixin APP_ENTRY_POINT;
@@ -423,6 +424,7 @@ class ModelViewerWidget : HorizontalLayout
             _state.camera.fitToBounds(minBound, maxBound);
 
             _state.loadError = "";
+            saveLastModelPath(_state.modelPath);
             return true;
         }
         catch (Exception ex)
@@ -482,7 +484,7 @@ class ModelViewerWidget : HorizontalLayout
     }
 }
 
-private string defaultModelPath(string[] args)
+private string modelPathFromArgs(string[] args)
 {
     foreach (arg; args)
     {
@@ -498,6 +500,11 @@ private string defaultModelPath(string[] args)
         return arg;
     }
 
+    return "";
+}
+
+private string fallbackModelPath()
+{
     immutable exeDir = thisExePath().dirName;
     string[] candidates = [
         buildPath(exeDir, "../data/cube.geo.xml"),
@@ -514,11 +521,24 @@ private string defaultModelPath(string[] args)
     return absolutePath(candidates[0]);
 }
 
+private string resolveInitialModelPath(string[] args)
+{
+    string fromArgs = modelPathFromArgs(args);
+    if (fromArgs.length > 0)
+        return fromArgs;
+
+    AppSettings settings = loadSettings();
+    if (settings.lastModelPath.length > 0 && exists(settings.lastModelPath))
+        return absolutePath(settings.lastModelPath);
+
+    return fallbackModelPath();
+}
+
 /// entry point for dlangui based application
 extern (C) int UIAppMain(string[] args)
 {
     AppState state;
-    state.modelPath = defaultModelPath(args);
+    state.modelPath = resolveInitialModelPath(args);
 
     Window window = Platform.instance.createWindow(
         "ModelViewer - Geo XML", null, WindowFlag.Resizable, 1280, 720);
