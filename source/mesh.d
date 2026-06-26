@@ -103,7 +103,7 @@ struct GeoMesh
         vec3 minBound;
         vec3 maxBound;
         model.computeBounds(minBound, maxBound);
-        float normalLength = length(maxBound - minBound) * 0.05f;
+        float normalLength = (maxBound - minBound).length * 0.05f;
         if (normalLength <= 0.0f)
             normalLength = 0.1f;
 
@@ -130,7 +130,7 @@ struct GeoMesh
                     batch.normals[base + 1],
                     batch.normals[base + 2]);
 
-                float normalLen = length(normal);
+                float normalLen = normal.length;
                 if (normalLen > 1e-6f)
                     normal /= normalLen;
 
