@@ -9,6 +9,9 @@ import std.string;
 
 import bindbc.opengl;
 import dlangui;
+import dlangui.core.stdaction : ACTION_OPEN;
+import dlangui.dialogs.dialog : Dialog;
+import dlangui.dialogs.filedlg;
 import dlangui.graphics.glsupport : GLProgram, VAO;
 import dlangui.graphics.resources;
 static import gl3n.linalg;
@@ -335,12 +338,24 @@ class ModelViewerWidget : HorizontalLayout
 
         _pathEdit = new EditLine("path");
         _pathEdit.layoutWidth = FILL_PARENT;
+        _pathEdit.readOnly = true;
         _pathEdit.text = _state.modelPath.to!dstring;
         panel.addChild(_pathEdit);
 
+        auto modelButtons = new HorizontalLayout("modelButtons");
+        modelButtons.layoutWidth = FILL_PARENT;
+
+        auto browseButton = new Button("browse", "Browse..."d);
+        browseButton.layoutWeight = 1;
+        browseButton.click = &onBrowseClicked;
+        modelButtons.addChild(browseButton);
+
         auto loadButton = new Button("load", "Load"d);
+        loadButton.layoutWeight = 1;
         loadButton.click = &onLoadClicked;
-        panel.addChild(loadButton);
+        modelButtons.addChild(loadButton);
+
+        panel.addChild(modelButtons);
 
         _errorText = new TextWidget("error");
         _errorText.textColor = 0xFFFF5959u;
@@ -454,7 +469,49 @@ class ModelViewerWidget : HorizontalLayout
 
     private bool onLoadClicked(Widget)
     {
-        _state.modelPath = _pathEdit.text.to!string;
+        return reloadModel();
+    }
+
+    private bool onBrowseClicked(Widget)
+    {
+        UIString caption = UIString.fromRaw("Open Geo XML"d);
+        auto dlg = new FileDialog(caption, _window, null, FileDialogFlag.Open);
+        dlg.path = browseInitialDirectory();
+        dlg.addFilter(FileFilterEntry(UIString.fromRaw("Geo XML (*.geo.xml)"d), "*.geo.xml"));
+        dlg.addFilter(FileFilterEntry(UIString.fromRaw("XML files (*.xml)"d), "*.xml"));
+        dlg.addFilter(FileFilterEntry(UIString.fromRaw("All files"d), "*"));
+        dlg.dialogResult = delegate(Dialog d, const Action result) {
+            if (result.id != ACTION_OPEN.id)
+                return;
+            immutable path = result.stringParam;
+            if (path.length == 0)
+                return;
+            setModelPath(path);
+            reloadModel();
+        };
+        dlg.show();
+        return true;
+    }
+
+    private string browseInitialDirectory()
+    {
+        if (_state.modelPath.length > 0)
+        {
+            immutable dir = dirName(_state.modelPath);
+            if (exists(dir))
+                return dir;
+        }
+        return getcwd();
+    }
+
+    private void setModelPath(string path)
+    {
+        _state.modelPath = path;
+        _pathEdit.text = path.to!dstring;
+    }
+
+    private bool reloadModel()
+    {
         _viewport.resetGpuState();
         if (!tryLoadModel())
             Log.w("Load failed: ", _state.loadError);
