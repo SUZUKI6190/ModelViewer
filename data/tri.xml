@@ -1,0 +1,6 @@
+<Geo name="Triangle">
+	<Triangle>
+		<vertex>0, 0, 0, 1, 0, 0, 0, 1, 0</vertex>
+		<indices>0 1 2</indices>
+	</Triangle>
+</Geo>

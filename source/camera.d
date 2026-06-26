@@ -42,14 +42,16 @@ struct ArcballCamera
         return value;
     }
 
-    void fitToBounds(vec3 minBound, vec3 maxBound)
+    void fitToBounds(vec3 minBound, vec3 maxBound, float fovDegrees = 45.0f, float padding = 1.2f)
     {
         target = (minBound + maxBound) * 0.5f;
-        auto extent = maxBound - minBound;
-        float radius = max(extent.x, max(extent.y, extent.z)) * 0.5f;
+        auto halfExtent = (maxBound - minBound) * 0.5f;
+        float radius = halfExtent.length;  // 中心→コーナーの距離
         if (radius < 1e-4f)
             radius = 1.0f;
-        distance = max(radius * 2.5f, 1.0f);
+        import gl3n.math : PI;
+        float halfFovRad = fovDegrees * 0.5f * (PI / 180.0f);
+        distance = max(radius / sin(halfFovRad) * padding, 1.0f);
         orientation = quat.identity;
     }
 
