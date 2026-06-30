@@ -10,6 +10,7 @@ import dxml.dom;
 import dxml.parser : EntityType;
 
 import geo_model;
+import gl3n.linalg;
 
 GeoModel parseGeoFile(string path)
 {
@@ -110,6 +111,9 @@ private TriangleBatch tryParseTriangle(DOMEntity!string element)
         return TriangleBatch.init;
     }
 
+    batch.skeleton = parseSkeleton(element, "skelton");
+    batch.vertexGroups = parseVertexGroups(element, "vertex_group");
+
     return batch;
 }
 
@@ -152,6 +156,8 @@ private LineBatch tryParseLine(DOMEntity!string element, LineTopology topology)
     batch.indices = indices;
     batch.color = parseColor(getChildText(element, "color"));
     batch.width = parseWidth(getChildText(element, "width"));
+    batch.skeleton = parseSkeleton(element, "skelton");
+    batch.vertexGroups = parseVertexGroups(element, "vertex_group");
     return batch;
 }
 
@@ -255,4 +261,114 @@ private float parseWidth(string text)
 
     auto width = to!float(trimmed);
     return width > 0.0f ? width : 1.0f;
+}
+
+private DOMEntity!string findChildElement(DOMEntity!string parent, string tagName)
+{
+    foreach (child; parent.children)
+    {
+        if (child.type != EntityType.elementStart && child.type != EntityType.elementEmpty)
+            continue;
+
+        if (child.name == tagName)
+            return child;
+    }
+
+    return DOMEntity!string.init;
+}
+
+private bool hasElement(DOMEntity!string element)
+{
+    return element.type == EntityType.elementStart || element.type == EntityType.elementEmpty;
+}
+
+private VertexGroup[] parseVertexGroups(DOMEntity!string parent, string tagName)
+{
+    auto element = findChildElement(parent, tagName);
+    if (!hasElement(element))
+        return [];
+
+    VertexGroup[] groups;
+    foreach (child; element.children)
+    {
+        if (child.type != EntityType.elementStart && child.type != EntityType.elementEmpty)
+            continue;
+
+        if (child.name != "group")
+            continue;
+
+        VertexGroup group;
+        group.name = getAttribute(child, "name");
+        group.indices = parseUIntArray(getChildText(child, "indices"));
+        groups ~= group;
+    }
+
+    return groups;
+}
+
+private Skeleton parseSkeleton(DOMEntity!string parent, string tagName)
+{
+    auto element = findChildElement(parent, tagName);
+    if (!hasElement(element))
+        return Skeleton.init;
+
+    Skeleton skeleton;
+    skeleton.name = getAttribute(element, "name");
+    skeleton.count = parseUIntAttribute(element, "count");
+
+    foreach (child; element.children)
+    {
+        if (child.type != EntityType.elementStart && child.type != EntityType.elementEmpty)
+            continue;
+
+        if (child.name != "node")
+            continue;
+
+        skeleton.bones ~= parseBoneNode(child);
+    }
+
+    return skeleton;
+}
+
+private BoneNode parseBoneNode(DOMEntity!string element)
+{
+    BoneNode bone;
+    bone.name = getAttribute(element, "name");
+    bone.pos = parseVec3(getChildText(element, "pos"));
+    bone.tailPos = parseVec3(getChildText(element, "tail_pos"));
+    bone.xAxis = parseVec3(getChildText(element, "x_axis"), vec3(1, 0, 0));
+    bone.yAxis = parseVec3(getChildText(element, "y_axis"), vec3(0, 1, 0));
+    bone.zAxis = parseVec3(getChildText(element, "z_axis"), vec3(0, 0, 1));
+    bone.weights = parseFloatArray(getChildText(element, "weights"));
+    bone.targetIndices = parseUIntArray(getChildText(element, "target_indices"));
+
+    foreach (child; element.children)
+    {
+        if (child.type != EntityType.elementStart && child.type != EntityType.elementEmpty)
+            continue;
+
+        if (child.name != "node")
+            continue;
+
+        bone.children ~= parseBoneNode(child);
+    }
+
+    return bone;
+}
+
+private uint parseUIntAttribute(DOMEntity!string element, string attributeName, uint defaultValue = 0)
+{
+    auto value = getAttribute(element, attributeName);
+    if (value.length == 0)
+        return defaultValue;
+    return to!uint(value);
+}
+
+private vec3 parseVec3(string text, vec3 defaultValue = vec3(0, 0, 0))
+{
+    auto values = parseFloatArray(text);
+    if (values.length < 3)
+        return defaultValue;
+
+    return vec3(values[0], values[1], values[2]);
 }

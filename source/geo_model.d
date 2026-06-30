@@ -11,6 +11,53 @@ enum LineTopology
     loop,
 }
 
+struct BoneNode
+{
+    string name;
+    vec3 pos;
+    vec3 tailPos;
+    vec3 xAxis = vec3(1, 0, 0);
+    vec3 yAxis = vec3(0, 1, 0);
+    vec3 zAxis = vec3(0, 0, 1);
+    float[] weights;
+    uint[] targetIndices;
+    BoneNode[] children;
+
+    @property size_t boneCount() const
+    {
+        size_t total = 1;
+        foreach (child; children)
+            total += child.boneCount;
+        return total;
+    }
+}
+
+struct Skeleton
+{
+    string name;
+    uint count;
+    BoneNode[] bones;
+
+    @property bool isValid() const
+    {
+        return bones.length > 0;
+    }
+
+    @property size_t boneCount() const
+    {
+        size_t total;
+        foreach (bone; bones)
+            total += bone.boneCount;
+        return total;
+    }
+}
+
+struct VertexGroup
+{
+    string name;
+    uint[] indices;
+}
+
 struct TriangleBatch
 {
     float[] vertices;
@@ -18,6 +65,8 @@ struct TriangleBatch
     float[] colors;
     float[] uvs;
     uint[] indices;
+    Skeleton skeleton;
+    VertexGroup[] vertexGroups;
 
     @property size_t vertexCount() const
     {
@@ -42,6 +91,8 @@ struct LineBatch
     float[3] color = [1.0f, 1.0f, 1.0f];
     float width = 1.0f;
     uint[] indices;
+    Skeleton skeleton;
+    VertexGroup[] vertexGroups;
 
     @property size_t vertexCount() const
     {

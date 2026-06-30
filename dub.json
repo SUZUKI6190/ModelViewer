@@ -36,7 +36,10 @@
 				"source/app.d",
 				"source/mesh.d",
 				"source/shader.d",
-				"source/camera.d"
+				"source/camera.d",
+				"source/axis_gizmo.d",
+				"source/axis_label.d",
+				"source/settings.d"
 			]
 		}
 	]
