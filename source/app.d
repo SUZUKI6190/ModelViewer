@@ -24,6 +24,7 @@ import geo_parser;
 import mesh;
 import settings;
 import shader;
+import skeleton_renderer;
 
 mixin APP_ENTRY_POINT;
 
@@ -36,6 +37,7 @@ struct AppState
     string loadError;
     bool meshGpuDirty;
     bool showNormals;
+    bool showSkeleton;
     bool showWorldAxes = true;
     bool showCornerAxes = true;
     float axisLength = 1.0f;
@@ -52,6 +54,7 @@ class ViewportWidget : Widget
     bool _gpuStateReported;
     AxisGizmo _axisGizmo;
     AxisLabelRenderer _axisLabels;
+    SkeletonRenderer _skeletonRenderer;
 
     this(
         AppState* state,
@@ -131,6 +134,20 @@ class ViewportWidget : Widget
             }
         }
 
+        if (_state.model.hasSkeleton)
+        {
+            if (!_skeletonRenderer.upload(_state.model))
+            {
+                _state.loadError = "Failed to upload skeleton to GPU";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+        else if (_skeletonRenderer.uploaded)
+        {
+            _skeletonRenderer.destroyGpu();
+        }
+
         if (_state.axisGpuDirty || !_axisGizmo.uploaded)
         {
             _axisGizmo.upload(_state.axisLength);
@@ -154,6 +171,7 @@ class ViewportWidget : Widget
         _shaderCompileFailed = false;
         _state.axisGpuDirty = true;
         _axisLabels.destroyGpu();
+        _skeletonRenderer.destroyGpu();
     }
 
     override bool onMouseEvent(MouseEvent event)
@@ -256,6 +274,9 @@ class ViewportWidget : Widget
 
         _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix, _state.showNormals);
 
+        if (_state.showSkeleton && _skeletonRenderer.hasContent)
+            _skeletonRenderer.draw(*_lineShader, mvpMatrix);
+
         if (_state.showWorldAxes)
         {
             gl3n.linalg.mat4 axisMvp = projectionMatrix * viewMatrix * modelMatrix;
@@ -305,7 +326,9 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _vertexText;
     TextWidget _triangleText;
     TextWidget _lineText;
+    TextWidget _boneText;
     CheckBox _showNormalsCheck;
+    CheckBox _showSkeletonCheck;
     CheckBox _showWorldAxesCheck;
     CheckBox _showCornerAxesCheck;
     VerticalLayout _panel;
@@ -378,11 +401,21 @@ class ModelViewerWidget : HorizontalLayout
         _lineText.visibility = Visibility.Gone;
         panel.addChild(_lineText);
 
+        _boneText = new TextWidget("bones");
+        _boneText.visibility = Visibility.Gone;
+        panel.addChild(_boneText);
+
         _showNormalsCheck = new CheckBox("showNormals", "Show normals"d);
         _showNormalsCheck.checked = _state.showNormals;
         _showNormalsCheck.visibility = Visibility.Gone;
         _showNormalsCheck.addOnCheckChangeListener(&onShowNormalsChanged);
         panel.addChild(_showNormalsCheck);
+
+        _showSkeletonCheck = new CheckBox("showSkeleton", "Show skeleton"d);
+        _showSkeletonCheck.checked = _state.showSkeleton;
+        _showSkeletonCheck.visibility = Visibility.Gone;
+        _showSkeletonCheck.addOnCheckChangeListener(&onShowSkeletonChanged);
+        panel.addChild(_showSkeletonCheck);
 
         _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
         _showWorldAxesCheck.checked = _state.showWorldAxes;
@@ -529,6 +562,13 @@ class ModelViewerWidget : HorizontalLayout
         return true;
     }
 
+    private bool onShowSkeletonChanged(Widget, bool checked)
+    {
+        _state.showSkeleton = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
     private bool onShowWorldAxesChanged(Widget, bool checked)
     {
         _state.showWorldAxes = checked;
@@ -581,7 +621,9 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
             _lineText.visibility = Visibility.Gone;
+            _boneText.visibility = Visibility.Gone;
             _showNormalsCheck.visibility = Visibility.Gone;
+            _showSkeletonCheck.visibility = Visibility.Gone;
             return;
         }
 
@@ -597,6 +639,21 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Visible;
             _triangleText.visibility = Visibility.Visible;
             _lineText.visibility = Visibility.Visible;
+
+            if (_state.model.hasSkeleton)
+            {
+                _boneText.text = ("Bones: " ~ _state.model.skeletonBoneCount.to!string).to!dstring;
+                _boneText.visibility = Visibility.Visible;
+                _showSkeletonCheck.visibility = Visibility.Visible;
+                _showSkeletonCheck.checked = _state.showSkeleton;
+            }
+            else
+            {
+                _state.showSkeleton = false;
+                _boneText.visibility = Visibility.Gone;
+                _showSkeletonCheck.checked = false;
+                _showSkeletonCheck.visibility = Visibility.Gone;
+            }
 
             if (_state.model.triangleCount > 0)
             {
@@ -616,7 +673,9 @@ class ModelViewerWidget : HorizontalLayout
             _vertexText.visibility = Visibility.Gone;
             _triangleText.visibility = Visibility.Gone;
             _lineText.visibility = Visibility.Gone;
+            _boneText.visibility = Visibility.Gone;
             _showNormalsCheck.visibility = Visibility.Gone;
+            _showSkeletonCheck.visibility = Visibility.Gone;
         }
     }
 }

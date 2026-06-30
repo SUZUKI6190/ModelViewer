@@ -39,6 +39,7 @@
 				"source/camera.d",
 				"source/axis_gizmo.d",
 				"source/axis_label.d",
+				"source/skeleton_renderer.d",
 				"source/settings.d"
 			]
 		}

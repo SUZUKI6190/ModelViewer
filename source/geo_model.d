@@ -149,6 +149,31 @@ struct GeoModel
         return false;
     }
 
+    @property bool hasSkeleton() const
+    {
+        foreach (batch; triangles)
+        {
+            if (batch.skeleton.isValid)
+                return true;
+        }
+        foreach (batch; lines)
+        {
+            if (batch.skeleton.isValid)
+                return true;
+        }
+        return false;
+    }
+
+    @property size_t skeletonBoneCount() const
+    {
+        size_t total;
+        foreach (batch; triangles)
+            total += batch.skeleton.boneCount;
+        foreach (batch; lines)
+            total += batch.skeleton.boneCount;
+        return total;
+    }
+
     void computeBounds(out vec3 minBound, out vec3 maxBound) const
     {
         bool found;
