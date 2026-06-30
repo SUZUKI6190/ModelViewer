@@ -155,6 +155,50 @@ void main()
 }
 };
 
+enum skeletonMeshVertexShader = q{
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+
+uniform mat4 uMVP;
+uniform mat4 uModel;
+uniform mat3 uNormalMatrix;
+
+out vec3 vNormal;
+out vec3 vWorldPos;
+
+void main()
+{
+    vWorldPos = vec3(uModel * vec4(aPos, 1.0));
+    vNormal = normalize(uNormalMatrix * aNormal);
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+};
+
+enum skeletonMeshFragmentShader = q{
+#version 330 core
+in vec3 vNormal;
+in vec3 vWorldPos;
+
+uniform vec3 uColor;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 lightDir = normalize(vec3(0.4, 0.9, 0.6));
+    vec3 viewDir = normalize(-vWorldPos);
+    vec3 halfDir = normalize(lightDir + viewDir);
+
+    float ambient = 0.28;
+    float diffuse = max(dot(vNormal, lightDir), 0.0);
+    float specular = pow(max(dot(vNormal, halfDir), 0.0), 32.0) * 0.12;
+
+    vec3 color = uColor * (ambient + diffuse * 0.72) + vec3(specular);
+    FragColor = vec4(color, 1.0);
+}
+};
+
 enum labelVertexShader = q{
 #version 330 core
 layout (location = 0) in vec2 aCorner;

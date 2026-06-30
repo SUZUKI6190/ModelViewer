@@ -38,6 +38,9 @@ struct AppState
     bool meshGpuDirty;
     bool showNormals;
     bool showSkeleton;
+    SkeletonDisplayStyle skeletonStyle = SkeletonDisplayStyle.both;
+    bool showBoneAxes = true;
+    bool showRollMark = true;
     bool showWorldAxes = true;
     bool showCornerAxes = true;
     float axisLength = 1.0f;
@@ -49,6 +52,7 @@ class ViewportWidget : Widget
     AppState* _state;
     ShaderProgram* _meshShader;
     ShaderProgram* _lineShader;
+    ShaderProgram* _skeletonMeshShader;
     bool _shaderCompileFailed;
     void delegate() _onGpuStateChanged;
     bool _gpuStateReported;
@@ -60,12 +64,14 @@ class ViewportWidget : Widget
         AppState* state,
         ShaderProgram* meshShader,
         ShaderProgram* lineShader,
+        ShaderProgram* skeletonMeshShader,
         void delegate() onGpuStateChanged = null)
     {
         super("viewport");
         _state = state;
         _meshShader = meshShader;
         _lineShader = lineShader;
+        _skeletonMeshShader = skeletonMeshShader;
         _onGpuStateChanged = onGpuStateChanged;
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
@@ -113,6 +119,17 @@ class ViewportWidget : Widget
             {
                 _shaderCompileFailed = true;
                 _state.loadError = "Failed to compile line shaders";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+
+        if (_skeletonMeshShader.program == 0)
+        {
+            if (!_skeletonMeshShader.compile(skeletonMeshVertexShader, skeletonMeshFragmentShader))
+            {
+                _shaderCompileFailed = true;
+                _state.loadError = "Failed to compile skeleton mesh shaders";
                 reportGpuStateOnce();
                 return false;
             }
@@ -275,7 +292,16 @@ class ViewportWidget : Widget
         _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix, _state.showNormals);
 
         if (_state.showSkeleton && _skeletonRenderer.hasContent)
-            _skeletonRenderer.draw(*_lineShader, mvpMatrix);
+        {
+            _skeletonRenderer.draw(
+                _state.skeletonStyle,
+                _state.showBoneAxes,
+                _state.showRollMark,
+                *_lineShader,
+                *_skeletonMeshShader,
+                modelMatrix,
+                mvpMatrix);
+        }
 
         if (_state.showWorldAxes)
         {
@@ -318,6 +344,7 @@ class ModelViewerWidget : HorizontalLayout
     AppState* _state;
     ShaderProgram _meshShader;
     ShaderProgram _lineShader;
+    ShaderProgram _skeletonMeshShader;
     Window _window;
 
     EditLine _pathEdit;
@@ -329,6 +356,12 @@ class ModelViewerWidget : HorizontalLayout
     TextWidget _boneText;
     CheckBox _showNormalsCheck;
     CheckBox _showSkeletonCheck;
+    CheckBox _showBoneAxesCheck;
+    CheckBox _showRollMarkCheck;
+    RadioButton _skeletonLinesRadio;
+    RadioButton _skeletonConesRadio;
+    RadioButton _skeletonBothRadio;
+    VerticalLayout _skeletonOptions;
     CheckBox _showWorldAxesCheck;
     CheckBox _showCornerAxesCheck;
     VerticalLayout _panel;
@@ -417,6 +450,37 @@ class ModelViewerWidget : HorizontalLayout
         _showSkeletonCheck.addOnCheckChangeListener(&onShowSkeletonChanged);
         panel.addChild(_showSkeletonCheck);
 
+        _skeletonOptions = new VerticalLayout("skeletonOptions");
+        _skeletonOptions.layoutWidth = FILL_PARENT;
+        _skeletonOptions.visibility = Visibility.Gone;
+
+        _skeletonOptions.addChild(new TextWidget("skeletonStyleLabel", "Skeleton style"d));
+
+        _skeletonLinesRadio = new RadioButton("skeletonLines", "Lines"d);
+        _skeletonLinesRadio.addOnCheckChangeListener(&onSkeletonLinesChanged);
+        _skeletonOptions.addChild(_skeletonLinesRadio);
+
+        _skeletonConesRadio = new RadioButton("skeletonCones", "Cones"d);
+        _skeletonConesRadio.addOnCheckChangeListener(&onSkeletonConesChanged);
+        _skeletonOptions.addChild(_skeletonConesRadio);
+
+        _skeletonBothRadio = new RadioButton("skeletonBoth", "Both"d);
+        _skeletonBothRadio.checked = true;
+        _skeletonBothRadio.addOnCheckChangeListener(&onSkeletonBothChanged);
+        _skeletonOptions.addChild(_skeletonBothRadio);
+
+        _showBoneAxesCheck = new CheckBox("showBoneAxes", "Show bone axes (RGB)"d);
+        _showBoneAxesCheck.checked = _state.showBoneAxes;
+        _showBoneAxesCheck.addOnCheckChangeListener(&onShowBoneAxesChanged);
+        _skeletonOptions.addChild(_showBoneAxesCheck);
+
+        _showRollMarkCheck = new CheckBox("showRollMark", "Show roll mark"d);
+        _showRollMarkCheck.checked = _state.showRollMark;
+        _showRollMarkCheck.addOnCheckChangeListener(&onShowRollMarkChanged);
+        _skeletonOptions.addChild(_showRollMarkCheck);
+
+        panel.addChild(_skeletonOptions);
+
         _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
         _showWorldAxesCheck.checked = _state.showWorldAxes;
         _showWorldAxesCheck.addOnCheckChangeListener(&onShowWorldAxesChanged);
@@ -441,7 +505,8 @@ class ModelViewerWidget : HorizontalLayout
 
         addChild(panel);
 
-        _viewport = new ViewportWidget(_state, &_meshShader, &_lineShader, &onGpuStateChanged);
+        _viewport = new ViewportWidget(
+            _state, &_meshShader, &_lineShader, &_skeletonMeshShader, &onGpuStateChanged);
         addChild(_viewport);
 
         if (!tryLoadModel())
@@ -475,6 +540,7 @@ class ModelViewerWidget : HorizontalLayout
         _state.mesh.release();
         _meshShader.program = 0;
         _lineShader.program = 0;
+        _skeletonMeshShader.program = 0;
     }
 
     override bool onKeyEvent(KeyEvent event)
@@ -565,8 +631,65 @@ class ModelViewerWidget : HorizontalLayout
     private bool onShowSkeletonChanged(Widget, bool checked)
     {
         _state.showSkeleton = checked;
+        updateSkeletonOptionsVisibility();
         _viewport.invalidate();
         return true;
+    }
+
+    private bool onSkeletonLinesChanged(Widget, bool checked)
+    {
+        if (!checked)
+            return true;
+        _state.skeletonStyle = SkeletonDisplayStyle.lines;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onSkeletonConesChanged(Widget, bool checked)
+    {
+        if (!checked)
+            return true;
+        _state.skeletonStyle = SkeletonDisplayStyle.cones;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onSkeletonBothChanged(Widget, bool checked)
+    {
+        if (!checked)
+            return true;
+        _state.skeletonStyle = SkeletonDisplayStyle.both;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onShowBoneAxesChanged(Widget, bool checked)
+    {
+        _state.showBoneAxes = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onShowRollMarkChanged(Widget, bool checked)
+    {
+        _state.showRollMark = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private void updateSkeletonStyleRadios()
+    {
+        _skeletonLinesRadio.checked = _state.skeletonStyle == SkeletonDisplayStyle.lines;
+        _skeletonConesRadio.checked = _state.skeletonStyle == SkeletonDisplayStyle.cones;
+        _skeletonBothRadio.checked = _state.skeletonStyle == SkeletonDisplayStyle.both;
+    }
+
+    private void updateSkeletonOptionsVisibility()
+    {
+        if (_state.model.hasSkeleton && _state.showSkeleton)
+            _skeletonOptions.visibility = Visibility.Visible;
+        else
+            _skeletonOptions.visibility = Visibility.Gone;
     }
 
     private bool onShowWorldAxesChanged(Widget, bool checked)
@@ -624,6 +747,7 @@ class ModelViewerWidget : HorizontalLayout
             _boneText.visibility = Visibility.Gone;
             _showNormalsCheck.visibility = Visibility.Gone;
             _showSkeletonCheck.visibility = Visibility.Gone;
+            _skeletonOptions.visibility = Visibility.Gone;
             return;
         }
 
@@ -646,6 +770,10 @@ class ModelViewerWidget : HorizontalLayout
                 _boneText.visibility = Visibility.Visible;
                 _showSkeletonCheck.visibility = Visibility.Visible;
                 _showSkeletonCheck.checked = _state.showSkeleton;
+                _showBoneAxesCheck.checked = _state.showBoneAxes;
+                _showRollMarkCheck.checked = _state.showRollMark;
+                updateSkeletonStyleRadios();
+                updateSkeletonOptionsVisibility();
             }
             else
             {
@@ -653,6 +781,7 @@ class ModelViewerWidget : HorizontalLayout
                 _boneText.visibility = Visibility.Gone;
                 _showSkeletonCheck.checked = false;
                 _showSkeletonCheck.visibility = Visibility.Gone;
+                _skeletonOptions.visibility = Visibility.Gone;
             }
 
             if (_state.model.triangleCount > 0)
@@ -676,6 +805,7 @@ class ModelViewerWidget : HorizontalLayout
             _boneText.visibility = Visibility.Gone;
             _showNormalsCheck.visibility = Visibility.Gone;
             _showSkeletonCheck.visibility = Visibility.Gone;
+            _skeletonOptions.visibility = Visibility.Gone;
         }
     }
 }
