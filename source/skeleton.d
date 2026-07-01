@@ -55,22 +55,43 @@ mat4 bindMatrixFromBone(ref const(BoneNode) bone)
 void flattenBindMatrices(const BoneNode[] roots, ref mat4[] bindWorld)
 {
     foreach (root; roots)
-        flattenBoneBind(root, bindWorld);
+        flattenBoneBind(root, bindWorld, -1);
 }
 
-private void flattenBoneBind(ref const(BoneNode) bone, ref mat4[] bindWorld)
+private void flattenBoneBind(ref const(BoneNode) bone, ref mat4[] bindWorld, int parentIndex)
 {
+    int[] unusedParent;
+    string[] unusedNames;
+    flattenBoneBindWithMetadata(bone, bindWorld, parentIndex, unusedParent, unusedNames);
+}
+
+private void flattenBoneBindWithMetadata(
+    ref const(BoneNode) bone,
+    ref mat4[] bindWorld,
+    int parentIndex,
+    ref int[] parentIndices,
+    ref string[] boneNames)
+{
+    const index = cast(int)bindWorld.length;
     bindWorld ~= bindMatrixFromBone(bone);
+    parentIndices ~= parentIndex;
+    boneNames ~= bone.name;
+
     foreach (child; bone.children)
-        flattenBoneBind(child, bindWorld);
+        flattenBoneBindWithMetadata(child, bindWorld, index, parentIndices, boneNames);
 }
 
 struct SkeletonRuntime
 {
     mat4[] bindWorld;
+    mat4[] localBind;
     mat4[] inverseBind;
     mat4[] currentWorld;
     mat4[] skinMatrices;
+    int[] parentIndex;
+    string[] boneNames;
+    float[] rotationY;
+    size_t selectedBoneIndex;
 
     @property bool active() const
     {
@@ -85,41 +106,89 @@ struct SkeletonRuntime
     void build(const Skeleton skeleton)
     {
         bindWorld = null;
+        localBind = null;
         inverseBind = null;
         currentWorld = null;
         skinMatrices = null;
+        parentIndex = null;
+        boneNames = null;
+        rotationY = null;
+        selectedBoneIndex = 0;
 
         if (!skeleton.isValid)
             return;
 
-        flattenBindMatrices(skeleton.bones, bindWorld);
+        foreach (root; skeleton.bones)
+            flattenBoneBindWithMetadata(root, bindWorld, -1, parentIndex, boneNames);
+
         if (bindWorld.length == 0)
             return;
 
+        localBind.length = bindWorld.length;
         inverseBind.length = bindWorld.length;
         currentWorld.length = bindWorld.length;
         skinMatrices.length = bindWorld.length;
+        rotationY.length = bindWorld.length;
 
         foreach (i; 0 .. bindWorld.length)
         {
+            if (parentIndex[i] >= 0)
+                localBind[i] = bindWorld[parentIndex[i]].inverse * bindWorld[i];
+            else
+                localBind[i] = bindWorld[i];
+
             inverseBind[i] = bindWorld[i].inverse;
-            currentWorld[i] = bindWorld[i];
-            skinMatrices[i] = mat4.identity;
+            rotationY[i] = 0;
         }
+
+        updateCurrentWorld();
     }
 
-    void applyAutoRotation(float angleRadians, size_t boneIndex = 0)
+    void setSelectedBone(size_t index)
     {
-        if (!active || boneIndex >= bindWorld.length)
+        if (index < boneCount)
+            selectedBoneIndex = index;
+    }
+
+    @property float selectedRotationY() const
+    {
+        if (selectedBoneIndex >= rotationY.length)
+            return 0;
+        return rotationY[selectedBoneIndex];
+    }
+
+    void setSelectedRotationY(float angleRadians)
+    {
+        if (selectedBoneIndex >= rotationY.length)
             return;
 
-        mat4 localRot = mat4.yrotation(angleRadians);
-        currentWorld[boneIndex] = bindWorld[boneIndex] * localRot;
+        rotationY[selectedBoneIndex] = angleRadians;
+        updateCurrentWorld();
+    }
+
+    void addSelectedRotationY(float deltaRadians)
+    {
+        setSelectedRotationY(selectedRotationY + deltaRadians);
+    }
+
+    void resetPose()
+    {
+        foreach (i; 0 .. rotationY.length)
+            rotationY[i] = 0;
+        updateCurrentWorld();
+    }
+
+    void updateCurrentWorld()
+    {
+        if (!active)
+            return;
 
         foreach (i; 0 .. bindWorld.length)
         {
-            if (i != boneIndex)
-                currentWorld[i] = bindWorld[i];
+            mat4 parentWorld = parentIndex[i] >= 0
+                ? currentWorld[parentIndex[i]]
+                : mat4.identity;
+            currentWorld[i] = parentWorld * localBind[i] * mat4.yrotation(rotationY[i]);
         }
 
         updateSkinMatrices();

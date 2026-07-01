@@ -1,8 +1,10 @@
 module app;
 
+import std.algorithm : clamp, min;
 import std.conv;
 import std.exception;
 import std.file;
+import std.format;
 import std.math;
 import std.path;
 import std.stdio;
@@ -15,6 +17,8 @@ import dlangui.dialogs.dialog : Dialog;
 import dlangui.dialogs.filedlg;
 import dlangui.graphics.glsupport : GLProgram, VAO;
 import dlangui.graphics.resources;
+import dlangui.widgets.combobox;
+import dlangui.widgets.scrollbar;
 static import gl3n.linalg;
 
 import axis_gizmo;
@@ -50,6 +54,7 @@ struct AppState
     bool axisGpuDirty = true;
     SkeletonRuntime skeletonRuntime;
     bool skinningActive;
+    bool editPose;
 }
 
 class ViewportWidget : Widget
@@ -66,6 +71,8 @@ class ViewportWidget : Widget
     ulong _animTimerId;
     bool _axisLabelsGpuDirty;
     bool _skeletonGpuDirty;
+    bool _boneDragging;
+    float _boneDragLastX;
     AxisGizmo _axisGizmo;
     AxisLabelRenderer _axisLabels;
     SkeletonRenderer _skeletonRenderer;
@@ -229,8 +236,6 @@ class ViewportWidget : Widget
     void updateAnimationTimer()
     {
         stopAnimationTimer();
-        if (_state.skinningActive)
-            _animTimerId = setTimer(16);
     }
 
     private void stopAnimationTimer()
@@ -256,6 +261,46 @@ class ViewportWidget : Widget
     {
         auto viewport = gl3n.linalg.vec2(cast(float)width, cast(float)height);
         auto mousePos = gl3n.linalg.vec2(cast(float)event.x, cast(float)event.y);
+
+        if (_state.editPose && _state.skeletonRuntime.active)
+        {
+            switch (event.action)
+            {
+            case MouseAction.ButtonDown:
+                if (event.button == MouseButton.Left)
+                {
+                    _boneDragging = true;
+                    _boneDragLastX = mousePos.x;
+                    return true;
+                }
+                break;
+
+            case MouseAction.Move:
+                if (_boneDragging)
+                {
+                    const deltaX = mousePos.x - _boneDragLastX;
+                    _boneDragLastX = mousePos.x;
+                    enum dragSensitivity = 0.01f;
+                    _state.skeletonRuntime.addSelectedRotationY(deltaX * dragSensitivity);
+                    if (_onGpuStateChanged !is null)
+                        _onGpuStateChanged();
+                    invalidate();
+                    return true;
+                }
+                break;
+
+            case MouseAction.ButtonUp:
+                if (event.button == MouseButton.Left && _boneDragging)
+                {
+                    _boneDragging = false;
+                    return true;
+                }
+                break;
+
+            default:
+                break;
+            }
+        }
 
         switch (event.action)
         {
@@ -294,6 +339,15 @@ class ViewportWidget : Widget
 
         if (event.keyCode == KeyCode.KEY_R)
         {
+            if ((event.flags & KeyFlag.Shift) != 0 && _state.skeletonRuntime.active)
+            {
+                _state.skeletonRuntime.resetPose();
+                if (_onGpuStateChanged !is null)
+                    _onGpuStateChanged();
+                invalidate();
+                return true;
+            }
+
             gl3n.linalg.vec3 minBound;
             gl3n.linalg.vec3 maxBound;
             _state.model.computeBounds(minBound, maxBound);
@@ -355,15 +409,10 @@ class ViewportWidget : Widget
         gl3n.linalg.mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
 
         gl3n.linalg.mat4[] skinMatrices = null;
+        const bool poseActive = _state.skeletonRuntime.active
+            && (_state.skinningActive || _state.editPose);
         if (_state.skinningActive)
-        {
-            enum rotationPeriodFrames = 240;
-            _animFrame++;
-            const angle = cast(float)(_animFrame % rotationPeriodFrames)
-                / cast(float)rotationPeriodFrames * 2.0f * PI;
-            _state.skeletonRuntime.applyAutoRotation(angle, 0);
             skinMatrices = _state.skeletonRuntime.skinMatrices;
-        }
 
         _state.mesh.draw(
             *_meshShader,
@@ -374,9 +423,9 @@ class ViewportWidget : Widget
             *_skinnedMeshShader,
             skinMatrices);
 
-        if (_state.showSkeleton && (_skeletonRenderer.hasContent || _state.skinningActive))
+        if (_state.showSkeleton && (_skeletonRenderer.hasContent || poseActive))
         {
-            if (_state.skinningActive && _state.skeletonRuntime.active)
+            if (poseActive)
             {
                 _skeletonRenderer.drawPosed(
                     _state.model,
@@ -462,6 +511,12 @@ class ModelViewerWidget : HorizontalLayout
     RadioButton _skeletonConesRadio;
     RadioButton _skeletonBothRadio;
     VerticalLayout _skeletonOptions;
+    VerticalLayout _poseOptions;
+    ComboBox _boneCombo;
+    CheckBox _editPoseCheck;
+    TextWidget _boneRotText;
+    SliderWidget _boneRotSlider;
+    Button _resetPoseButton;
     CheckBox _showWorldAxesCheck;
     CheckBox _showCornerAxesCheck;
     VerticalLayout _panel;
@@ -583,6 +638,40 @@ class ModelViewerWidget : HorizontalLayout
 
         panel.addChild(_skeletonOptions);
 
+        _poseOptions = new VerticalLayout("poseOptions");
+        _poseOptions.layoutWidth = FILL_PARENT;
+        _poseOptions.visibility = Visibility.Gone;
+
+        _poseOptions.addChild(new TextWidget("poseTitle", "Bone pose"d));
+
+        _boneCombo = new ComboBox("boneCombo");
+        _boneCombo.layoutWidth = FILL_PARENT;
+        _boneCombo.itemClick = &onBoneSelected;
+        _poseOptions.addChild(_boneCombo);
+
+        _editPoseCheck = new CheckBox("editPose", "Edit pose (left drag = Y rot)"d);
+        _editPoseCheck.checked = _state.editPose;
+        _editPoseCheck.addOnCheckChangeListener(&onEditPoseChanged);
+        _poseOptions.addChild(_editPoseCheck);
+
+        _boneRotText = new TextWidget("boneRotText", "Rotation Y: 0.0°"d);
+        _poseOptions.addChild(_boneRotText);
+
+        _boneRotSlider = new SliderWidget("boneRotSlider");
+        _boneRotSlider.layoutWidth = FILL_PARENT;
+        _boneRotSlider.minValue = -180;
+        _boneRotSlider.maxValue = 180;
+        _boneRotSlider.position = 0;
+        _boneRotSlider.scrollEvent = &onBoneRotSliderChanged;
+        _poseOptions.addChild(_boneRotSlider);
+
+        _resetPoseButton = new Button("resetPose", "Reset pose"d);
+        _resetPoseButton.layoutWidth = FILL_PARENT;
+        _resetPoseButton.click = &onResetPoseClicked;
+        _poseOptions.addChild(_resetPoseButton);
+
+        panel.addChild(_poseOptions);
+
         _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
         _showWorldAxesCheck.checked = _state.showWorldAxes;
         _showWorldAxesCheck.addOnCheckChangeListener(&onShowWorldAxesChanged);
@@ -603,7 +692,8 @@ class ModelViewerWidget : HorizontalLayout
         panel.addChild(new TextWidget("ctrl3", "• Wheel: zoom"d));
         panel.addChild(new TextWidget("ctrl4", "• Shift + drag: fast pan"d));
         panel.addChild(new TextWidget("ctrl5", "• R: reset camera"d));
-        panel.addChild(new TextWidget("ctrl6", "• Esc: quit"d));
+        panel.addChild(new TextWidget("ctrl6", "• Shift+R: reset bone pose"d));
+        panel.addChild(new TextWidget("ctrl7", "• Esc: quit"d));
 
         addChild(panel);
 
@@ -819,6 +909,74 @@ class ModelViewerWidget : HorizontalLayout
             _skeletonOptions.visibility = Visibility.Gone;
     }
 
+    private void updatePoseOptionsVisibility()
+    {
+        if (_state.model.hasSkeleton && _state.skeletonRuntime.active)
+            _poseOptions.visibility = Visibility.Visible;
+        else
+            _poseOptions.visibility = Visibility.Gone;
+    }
+
+    private void updateBoneComboItems()
+    {
+        dstring[] items;
+        foreach (name; _state.skeletonRuntime.boneNames)
+            items ~= name.to!dstring;
+
+        _boneCombo.items = items;
+        if (items.length > 0)
+        {
+            const idx = cast(int)min(_state.skeletonRuntime.selectedBoneIndex, items.length - 1);
+            _boneCombo.selectedItemIndex = idx;
+            _state.skeletonRuntime.setSelectedBone(idx);
+        }
+    }
+
+    private void updateBoneRotationUi()
+    {
+        const degrees = _state.skeletonRuntime.selectedRotationY * (180.0 / PI);
+        _boneRotText.text = format("Rotation Y: %.1f°"d, degrees);
+        _boneRotSlider.position = cast(int)lround(clamp(degrees, -180.0, 180.0));
+        _editPoseCheck.checked = _state.editPose;
+    }
+
+    private bool onBoneSelected(Widget, int itemIndex)
+    {
+        _state.skeletonRuntime.setSelectedBone(itemIndex);
+        updateBoneRotationUi();
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onEditPoseChanged(Widget, bool checked)
+    {
+        _state.editPose = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onBoneRotSliderChanged(AbstractSlider, ScrollEvent event)
+    {
+        if (event.action != ScrollAction.SliderMoved
+            && event.action != ScrollAction.SliderPressed
+            && event.action != ScrollAction.SliderReleased)
+            return false;
+
+        const degrees = cast(float)event.position;
+        _state.skeletonRuntime.setSelectedRotationY(degrees * (PI / 180.0));
+        _boneRotText.text = format("Rotation Y: %.1f°"d, degrees);
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onResetPoseClicked(Widget)
+    {
+        _state.skeletonRuntime.resetPose();
+        updateBoneRotationUi();
+        _viewport.invalidate();
+        return true;
+    }
+
     private bool onShowWorldAxesChanged(Widget, bool checked)
     {
         _state.showWorldAxes = checked;
@@ -851,18 +1009,16 @@ class ModelViewerWidget : HorizontalLayout
             _state.axisGpuDirty = true;
 
             _state.skinningActive = false;
+            _state.editPose = false;
             _state.skeletonRuntime = SkeletonRuntime.init;
             foreach (batch; _state.model.triangles)
             {
                 if (!batch.skeleton.isValid)
                     continue;
 
-                auto skinningData = buildSkinningData(batch);
-                if (skinningData.influencedVertices == 0)
-                    continue;
-
                 _state.skeletonRuntime.build(batch.skeleton);
-                _state.skinningActive = _state.skeletonRuntime.active;
+                auto skinningData = buildSkinningData(batch);
+                _state.skinningActive = skinningData.influencedVertices > 0;
                 break;
             }
 
@@ -892,6 +1048,7 @@ class ModelViewerWidget : HorizontalLayout
             _showNormalsCheck.visibility = Visibility.Gone;
             _showSkeletonCheck.visibility = Visibility.Gone;
             _skeletonOptions.visibility = Visibility.Gone;
+            _poseOptions.visibility = Visibility.Gone;
             return;
         }
 
@@ -918,14 +1075,19 @@ class ModelViewerWidget : HorizontalLayout
                 _showRollMarkCheck.checked = _state.showRollMark;
                 updateSkeletonStyleRadios();
                 updateSkeletonOptionsVisibility();
+                updateBoneComboItems();
+                updateBoneRotationUi();
+                updatePoseOptionsVisibility();
             }
             else
             {
                 _state.showSkeleton = false;
+                _state.editPose = false;
                 _boneText.visibility = Visibility.Gone;
                 _showSkeletonCheck.checked = false;
                 _showSkeletonCheck.visibility = Visibility.Gone;
                 _skeletonOptions.visibility = Visibility.Gone;
+                _poseOptions.visibility = Visibility.Gone;
             }
 
             if (_state.model.triangleCount > 0)
@@ -950,6 +1112,7 @@ class ModelViewerWidget : HorizontalLayout
             _showNormalsCheck.visibility = Visibility.Gone;
             _showSkeletonCheck.visibility = Visibility.Gone;
             _skeletonOptions.visibility = Visibility.Gone;
+            _poseOptions.visibility = Visibility.Gone;
         }
     }
 }
