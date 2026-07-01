@@ -29,6 +29,13 @@ struct LineVertex
     float[3] position;
 }
 
+private struct VertexGroupHighlightGpu
+{
+    string name;
+    GLuint ebo;
+    GLsizei indexCount;
+}
+
 private struct TriangleGpuBatch
 {
     GLuint vao;
@@ -37,6 +44,7 @@ private struct TriangleGpuBatch
     GLsizei indexCount;
     bool skinned;
     size_t boneCount;
+    VertexGroupHighlightGpu[] highlights;
 }
 
 private struct LineGpuBatch
@@ -194,6 +202,7 @@ struct GeoMesh
                 glBindVertexArray(0);
             }
 
+            uploadVertexGroupHighlights(gpu, batch);
             _triangles ~= gpu;
         }
 
@@ -332,38 +341,42 @@ struct GeoMesh
         mat4 mvpMatrix,
         bool showNormals = false,
         ShaderProgram skinnedMeshShader = ShaderProgram.init,
-        mat4[] skinMatrices = null) const
+        mat4[] skinMatrices = null,
+        bool highlightMode = false,
+        string highlightGroupName = "") const
     {
+        enum baseColor = [0.62f, 0.70f, 0.82f];
+        enum dimColor = [0.36f, 0.40f, 0.46f];
+        enum highlightColor = [1.0f, 0.55f, 0.15f];
+
         foreach (batch; _triangles)
         {
             if (batch.vao == 0 || batch.indexCount == 0)
                 continue;
 
+            const float[3] meshColor = highlightMode ? dimColor : baseColor;
+
             if (batch.skinned && skinnedMeshShader.program != 0 && skinMatrices.length > 0)
             {
-                skinnedMeshShader.use();
-                glUniformMatrix4fv(skinnedMeshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
-                glUniformMatrix4fv(skinnedMeshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+                drawSkinnedTriangleBatch(
+                    batch,
+                    skinnedMeshShader,
+                    modelMatrix,
+                    mvpMatrix,
+                    skinMatrices,
+                    meshColor);
 
-                const count = min(skinMatrices.length, MAX_GPU_BONES);
-                GLint baseLoc = skinnedMeshShader.location("uBoneMatrices");
-                if (baseLoc < 0)
-                    baseLoc = skinnedMeshShader.location("uBoneMatrices[0]");
-                if (baseLoc >= 0)
+                if (highlightMode && highlightGroupName.length > 0)
                 {
-                    foreach (i; 0 .. count)
-                    {
-                        glUniformMatrix4fv(
-                            baseLoc + cast(GLint)i,
-                            1,
-                            GL_TRUE,
-                            skinMatrices[i].value_ptr);
-                    }
+                    drawSkinnedTriangleBatchHighlight(
+                        batch,
+                        skinnedMeshShader,
+                        modelMatrix,
+                        mvpMatrix,
+                        skinMatrices,
+                        highlightGroupName,
+                        highlightColor);
                 }
-
-                glBindVertexArray(batch.vao);
-                glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
-                glBindVertexArray(0);
             }
             else if (batch.skinned)
             {
@@ -371,16 +384,23 @@ struct GeoMesh
             }
             else
             {
-                meshShader.use();
-                glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
-                glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+                drawStaticTriangleBatch(
+                    batch,
+                    meshShader,
+                    modelMatrix,
+                    mvpMatrix,
+                    meshColor);
 
-                float[9] normalMatrix = extractNormalMatrix(modelMatrix);
-                glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
-
-                glBindVertexArray(batch.vao);
-                glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
-                glBindVertexArray(0);
+                if (highlightMode && highlightGroupName.length > 0)
+                {
+                    drawStaticTriangleBatchHighlight(
+                        batch,
+                        meshShader,
+                        modelMatrix,
+                        mvpMatrix,
+                        highlightGroupName,
+                        highlightColor);
+                }
             }
         }
 
@@ -449,6 +469,17 @@ struct GeoMesh
 
     private static void destroyTriangleBatch(ref TriangleGpuBatch batch)
     {
+        foreach (ref highlight; batch.highlights)
+        {
+            if (highlight.ebo != 0)
+            {
+                glDeleteBuffers(1, &highlight.ebo);
+                highlight.ebo = 0;
+            }
+            highlight.indexCount = 0;
+        }
+        batch.highlights = null;
+
         if (batch.ebo != 0)
         {
             glDeleteBuffers(1, &batch.ebo);
@@ -487,6 +518,190 @@ struct GeoMesh
             batch.vao = 0;
         }
         batch.indexCount = 0;
+    }
+
+    private static void uploadVertexGroupHighlights(
+        ref TriangleGpuBatch gpu,
+        const TriangleBatch batch)
+    {
+        foreach (group; batch.vertexGroups)
+        {
+            if (group.indices.length == 0)
+                continue;
+
+            auto highlightIndices = buildGroupHighlightIndices(batch.indices, group.indices);
+            if (highlightIndices.length == 0)
+                continue;
+
+            VertexGroupHighlightGpu highlight;
+            highlight.name = group.name;
+            highlight.indexCount = cast(GLsizei)(highlightIndices.length);
+
+            glGenBuffers(1, &highlight.ebo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, highlight.ebo);
+            glBufferData(
+                GL_ELEMENT_ARRAY_BUFFER,
+                highlightIndices.length * uint.sizeof,
+                highlightIndices.ptr,
+                GL_STATIC_DRAW);
+
+            gpu.highlights ~= highlight;
+        }
+    }
+
+    private static uint[] buildGroupHighlightIndices(
+        const uint[] triangleIndices,
+        const uint[] groupVertexIndices)
+    {
+        bool[uint] members;
+        foreach (vi; groupVertexIndices)
+            members[vi] = true;
+
+        uint[] result;
+        result.reserve(triangleIndices.length);
+
+        for (size_t i = 0; i + 2 < triangleIndices.length; i += 3)
+        {
+            const i0 = triangleIndices[i];
+            const i1 = triangleIndices[i + 1];
+            const i2 = triangleIndices[i + 2];
+            if (i0 in members || i1 in members || i2 in members)
+                result ~= [i0, i1, i2];
+        }
+
+        return result;
+    }
+
+    private static void drawStaticTriangleBatch(
+        const TriangleGpuBatch batch,
+        ShaderProgram meshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix,
+        const float[3] color)
+    {
+        meshShader.use();
+        glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+        glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+        glUniform3fv(meshShader.location("uColor"), 1, color.ptr);
+
+        float[9] normalMatrix = extractNormalMatrix(modelMatrix);
+        glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
+
+        glBindVertexArray(batch.vao);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, batch.ebo);
+        glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
+        glBindVertexArray(0);
+    }
+
+    private static void drawStaticTriangleBatchHighlight(
+        const TriangleGpuBatch batch,
+        ShaderProgram meshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix,
+        string groupName,
+        const float[3] color)
+    {
+        foreach (highlight; batch.highlights)
+        {
+            if (highlight.ebo == 0 || highlight.indexCount == 0)
+                continue;
+            if (highlight.name != groupName)
+                continue;
+
+            meshShader.use();
+            glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+            glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+            glUniform3fv(meshShader.location("uColor"), 1, color.ptr);
+
+            float[9] normalMatrix = extractNormalMatrix(modelMatrix);
+            glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
+
+            glBindVertexArray(batch.vao);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, highlight.ebo);
+            glDrawElements(GL_TRIANGLES, highlight.indexCount, GL_UNSIGNED_INT, null);
+            glBindVertexArray(0);
+            return;
+        }
+    }
+
+    private static void drawSkinnedTriangleBatch(
+        const TriangleGpuBatch batch,
+        ShaderProgram skinnedMeshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix,
+        mat4[] skinMatrices,
+        const float[3] color)
+    {
+        skinnedMeshShader.use();
+        glUniformMatrix4fv(skinnedMeshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+        glUniformMatrix4fv(skinnedMeshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+        glUniform3fv(skinnedMeshShader.location("uColor"), 1, color.ptr);
+
+        const count = min(skinMatrices.length, MAX_GPU_BONES);
+        GLint baseLoc = skinnedMeshShader.location("uBoneMatrices");
+        if (baseLoc < 0)
+            baseLoc = skinnedMeshShader.location("uBoneMatrices[0]");
+        if (baseLoc >= 0)
+        {
+            foreach (i; 0 .. count)
+            {
+                glUniformMatrix4fv(
+                    baseLoc + cast(GLint)i,
+                    1,
+                    GL_TRUE,
+                    skinMatrices[i].value_ptr);
+            }
+        }
+
+        glBindVertexArray(batch.vao);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, batch.ebo);
+        glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
+        glBindVertexArray(0);
+    }
+
+    private static void drawSkinnedTriangleBatchHighlight(
+        const TriangleGpuBatch batch,
+        ShaderProgram skinnedMeshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix,
+        mat4[] skinMatrices,
+        string groupName,
+        const float[3] color)
+    {
+        foreach (highlight; batch.highlights)
+        {
+            if (highlight.ebo == 0 || highlight.indexCount == 0)
+                continue;
+            if (highlight.name != groupName)
+                continue;
+
+            skinnedMeshShader.use();
+            glUniformMatrix4fv(skinnedMeshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+            glUniformMatrix4fv(skinnedMeshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+            glUniform3fv(skinnedMeshShader.location("uColor"), 1, color.ptr);
+
+            const count = min(skinMatrices.length, MAX_GPU_BONES);
+            GLint baseLoc = skinnedMeshShader.location("uBoneMatrices");
+            if (baseLoc < 0)
+                baseLoc = skinnedMeshShader.location("uBoneMatrices[0]");
+            if (baseLoc >= 0)
+            {
+                foreach (i; 0 .. count)
+                {
+                    glUniformMatrix4fv(
+                        baseLoc + cast(GLint)i,
+                        1,
+                        GL_TRUE,
+                        skinMatrices[i].value_ptr);
+                }
+            }
+
+            glBindVertexArray(batch.vao);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, highlight.ebo);
+            glDrawElements(GL_TRIANGLES, highlight.indexCount, GL_UNSIGNED_INT, null);
+            glBindVertexArray(0);
+            return;
+        }
     }
 
     private static float[9] extractNormalMatrix(mat4 modelMatrix)

@@ -174,6 +174,38 @@ struct GeoModel
         return total;
     }
 
+    @property bool hasVertexGroups() const
+    {
+        foreach (batch; triangles)
+        {
+            foreach (group; batch.vertexGroups)
+            {
+                if (group.name.length > 0)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    string[] collectVertexGroupNames() const
+    {
+        bool[string] seen;
+        string[] names;
+
+        foreach (batch; triangles)
+        {
+            foreach (group; batch.vertexGroups)
+            {
+                if (group.name.length == 0 || group.name in seen)
+                    continue;
+                seen[group.name] = true;
+                names ~= group.name;
+            }
+        }
+
+        return names;
+    }
+
     void computeBounds(out vec3 minBound, out vec3 maxBound) const
     {
         bool found;

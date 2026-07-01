@@ -113,11 +113,12 @@ enum meshFragmentShader = q{
 in vec3 vNormal;
 in vec3 vWorldPos;
 
+uniform vec3 uColor;
+
 out vec4 FragColor;
 
 void main()
 {
-    vec3 baseColor = vec3(0.62, 0.70, 0.82);
     vec3 lightDir = normalize(vec3(0.4, 0.9, 0.6));
     vec3 viewDir = normalize(-vWorldPos);
     vec3 halfDir = normalize(lightDir + viewDir);
@@ -126,7 +127,7 @@ void main()
     float diffuse = max(dot(vNormal, lightDir), 0.0);
     float specular = pow(max(dot(vNormal, halfDir), 0.0), 48.0) * 0.18;
 
-    vec3 color = baseColor * (ambient + diffuse * 0.78) + vec3(specular);
+    vec3 color = uColor * (ambient + diffuse * 0.78) + vec3(specular);
     FragColor = vec4(color, 1.0);
 }
 };
@@ -277,11 +278,12 @@ enum skinnedMeshFragmentShader = q{
 in vec3 vNormal;
 in vec3 vWorldPos;
 
+uniform vec3 uColor;
+
 out vec4 FragColor;
 
 void main()
 {
-    vec3 baseColor = vec3(0.62, 0.70, 0.82);
     vec3 lightDir = normalize(vec3(0.4, 0.9, 0.6));
     vec3 viewDir = normalize(-vWorldPos);
     vec3 halfDir = normalize(lightDir + viewDir);
@@ -290,7 +292,7 @@ void main()
     float diffuse = max(dot(vNormal, lightDir), 0.0);
     float specular = pow(max(dot(vNormal, halfDir), 0.0), 48.0) * 0.18;
 
-    vec3 color = baseColor * (ambient + diffuse * 0.78) + vec3(specular);
+    vec3 color = uColor * (ambient + diffuse * 0.78) + vec3(specular);
     FragColor = vec4(color, 1.0);
 }
 };

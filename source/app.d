@@ -55,6 +55,8 @@ struct AppState
     SkeletonRuntime skeletonRuntime;
     bool skinningActive;
     bool editPose;
+    bool highlightVertexGroup;
+    int highlightGroupIndex;
 }
 
 class ViewportWidget : Widget
@@ -423,7 +425,9 @@ class ViewportWidget : Widget
             mvpMatrix,
             _state.showNormals,
             *_skinnedMeshShader,
-            skinMatrices);
+            skinMatrices,
+            _state.highlightVertexGroup,
+            highlightGroupName(*_state));
 
         if (_state.showSkeleton && (_skeletonRenderer.hasContent || poseActive))
         {
@@ -514,6 +518,9 @@ class ModelViewerWidget : HorizontalLayout
     RadioButton _skeletonBothRadio;
     VerticalLayout _skeletonOptions;
     VerticalLayout _poseOptions;
+    VerticalLayout _vertexGroupOptions;
+    CheckBox _highlightVertexGroupCheck;
+    ComboBox _vertexGroupCombo;
     ComboBox _boneCombo;
     CheckBox _editPoseCheck;
     TextWidget _boneRotText;
@@ -673,6 +680,24 @@ class ModelViewerWidget : HorizontalLayout
         _poseOptions.addChild(_resetPoseButton);
 
         panel.addChild(_poseOptions);
+
+        _vertexGroupOptions = new VerticalLayout("vertexGroupOptions");
+        _vertexGroupOptions.layoutWidth = FILL_PARENT;
+        _vertexGroupOptions.visibility = Visibility.Gone;
+
+        _vertexGroupOptions.addChild(new TextWidget("vertexGroupTitle", "Vertex group highlight"d));
+
+        _highlightVertexGroupCheck = new CheckBox("highlightVertexGroup", "Enable highlight"d);
+        _highlightVertexGroupCheck.checked = _state.highlightVertexGroup;
+        _highlightVertexGroupCheck.addOnCheckChangeListener(&onHighlightVertexGroupChanged);
+        _vertexGroupOptions.addChild(_highlightVertexGroupCheck);
+
+        _vertexGroupCombo = new ComboBox("vertexGroupCombo");
+        _vertexGroupCombo.layoutWidth = FILL_PARENT;
+        _vertexGroupCombo.itemClick = &onVertexGroupSelected;
+        _vertexGroupOptions.addChild(_vertexGroupCombo);
+
+        panel.addChild(_vertexGroupOptions);
 
         _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
         _showWorldAxesCheck.checked = _state.showWorldAxes;
@@ -995,6 +1020,48 @@ class ModelViewerWidget : HorizontalLayout
         return true;
     }
 
+    private bool onHighlightVertexGroupChanged(Widget, bool checked)
+    {
+        _state.highlightVertexGroup = checked;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private bool onVertexGroupSelected(Widget, int itemIndex)
+    {
+        _state.highlightGroupIndex = itemIndex;
+        _viewport.invalidate();
+        return true;
+    }
+
+    private void updateVertexGroupComboItems()
+    {
+        auto names = _state.model.collectVertexGroupNames();
+        dstring[] items;
+        foreach (name; names)
+            items ~= name.to!dstring;
+
+        _vertexGroupCombo.items = items;
+        if (items.length > 0)
+        {
+            const idx = cast(int)min(_state.highlightGroupIndex, items.length - 1);
+            _state.highlightGroupIndex = idx;
+            _vertexGroupCombo.selectedItemIndex = idx;
+        }
+        else
+        {
+            _state.highlightGroupIndex = 0;
+        }
+    }
+
+    private void updateVertexGroupOptionsVisibility()
+    {
+        if (_state.model.hasVertexGroups && _state.model.triangleCount > 0)
+            _vertexGroupOptions.visibility = Visibility.Visible;
+        else
+            _vertexGroupOptions.visibility = Visibility.Gone;
+    }
+
     private bool tryLoadModel()
     {
         try
@@ -1014,6 +1081,8 @@ class ModelViewerWidget : HorizontalLayout
 
             _state.skinningActive = false;
             _state.editPose = false;
+            _state.highlightVertexGroup = false;
+            _state.highlightGroupIndex = 0;
             _state.skeletonRuntime = SkeletonRuntime.init;
             foreach (batch; _state.model.triangles)
             {
@@ -1053,6 +1122,7 @@ class ModelViewerWidget : HorizontalLayout
             _showSkeletonCheck.visibility = Visibility.Gone;
             _skeletonOptions.visibility = Visibility.Gone;
             _poseOptions.visibility = Visibility.Gone;
+            _vertexGroupOptions.visibility = Visibility.Gone;
             return;
         }
 
@@ -1105,6 +1175,10 @@ class ModelViewerWidget : HorizontalLayout
                 _showNormalsCheck.checked = false;
                 _showNormalsCheck.visibility = Visibility.Gone;
             }
+
+            updateVertexGroupComboItems();
+            _highlightVertexGroupCheck.checked = _state.highlightVertexGroup;
+            updateVertexGroupOptionsVisibility();
         }
         else
         {
@@ -1117,8 +1191,18 @@ class ModelViewerWidget : HorizontalLayout
             _showSkeletonCheck.visibility = Visibility.Gone;
             _skeletonOptions.visibility = Visibility.Gone;
             _poseOptions.visibility = Visibility.Gone;
+            _vertexGroupOptions.visibility = Visibility.Gone;
         }
     }
+}
+
+private string highlightGroupName(const ref AppState state)
+{
+    auto names = state.model.collectVertexGroupNames();
+    if (names.length == 0)
+        return "";
+    const idx = cast(size_t)min(state.highlightGroupIndex, cast(int)(names.length - 1));
+    return names[idx];
 }
 
 private string modelPathFromArgs(string[] args)
