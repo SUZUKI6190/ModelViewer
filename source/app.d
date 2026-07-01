@@ -97,6 +97,7 @@ class ViewportWidget : Widget
         layoutHeight = FILL_PARENT;
         layoutWeight = 1;
         minWidth = 100;
+        focusable = true;
         backgroundDrawable = DrawableRef(new OpenGLDrawable(&drawScene));
     }
 
@@ -310,6 +311,7 @@ class ViewportWidget : Widget
             return true;
 
         case MouseAction.ButtonDown:
+            setFocus();
             beginCameraDrag(event, mousePos, viewport);
             invalidate();
             return true;
@@ -749,6 +751,8 @@ class ModelViewerWidget : HorizontalLayout
             _window.close();
             return true;
         }
+        if (event.action == KeyAction.KeyDown && event.keyCode == KeyCode.KEY_R)
+            return _viewport.onKeyEvent(event);
         return super.onKeyEvent(event);
     }
 
