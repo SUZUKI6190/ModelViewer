@@ -1,15 +1,27 @@
 module mesh;
 
+import std.algorithm : min;
+
 import bindbc.opengl;
 import gl3n.linalg;
 
 import geo_model;
 import shader;
+import skeleton;
+import skinning;
 
 struct MeshVertex
 {
     float[3] position;
     float[3] normal;
+}
+
+struct SkinnedMeshVertex
+{
+    float[3] position;
+    float[3] normal;
+    float[4] boneIds;
+    float[4] weights;
 }
 
 struct LineVertex
@@ -23,6 +35,8 @@ private struct TriangleGpuBatch
     GLuint vbo;
     GLuint ebo;
     GLsizei indexCount;
+    bool skinned;
+    size_t boneCount;
 }
 
 private struct LineGpuBatch
@@ -48,6 +62,16 @@ struct GeoMesh
         return _uploaded;
     }
 
+    @property bool hasSkinnedBatch() const
+    {
+        foreach (batch; _triangles)
+        {
+            if (batch.skinned)
+                return true;
+        }
+        return false;
+    }
+
     bool upload(const(GeoModel) model)
     {
         destroyGpu();
@@ -57,46 +81,119 @@ struct GeoMesh
             if (batch.vertexCount == 0 || batch.indices.length == 0)
                 continue;
 
-            TriangleGpuBatch gpu;
-            MeshVertex[] vertices;
-            vertices.length = batch.vertexCount;
+            auto skinning = buildSkinningData(batch);
+            const bool skinned = skinning.influencedVertices > 0;
 
-            for (size_t i = 0; i < batch.vertexCount; ++i)
+            TriangleGpuBatch gpu;
+            gpu.skinned = skinned;
+            gpu.boneCount = skinning.bones.length;
+
+            if (skinned)
             {
-                size_t base = i * 3;
-                vertices[i].position = [
-                    batch.vertices[base],
-                    batch.vertices[base + 1],
-                    batch.vertices[base + 2]
-                ];
-                vertices[i].normal = [
-                    batch.normals[base],
-                    batch.normals[base + 1],
-                    batch.normals[base + 2]
-                ];
+                SkinnedMeshVertex[] vertices;
+                vertices.length = batch.vertexCount;
+
+                for (size_t i = 0; i < batch.vertexCount; ++i)
+                {
+                    size_t base = i * 3;
+                    vertices[i].position = [
+                        batch.vertices[base],
+                        batch.vertices[base + 1],
+                        batch.vertices[base + 2]
+                    ];
+                    vertices[i].normal = [
+                        batch.normals[base],
+                        batch.normals[base + 1],
+                        batch.normals[base + 2]
+                    ];
+
+                    auto skin = skinning.vertices[i];
+                    foreach (j; 0 .. MAX_BONE_INFLUENCES)
+                    {
+                        vertices[i].boneIds[j] = skin.boneIds[j] >= 0
+                            ? cast(float)skin.boneIds[j]
+                            : -1.0f;
+                        vertices[i].weights[j] = skin.weights[j];
+                    }
+                }
+
+                gpu.indexCount = cast(GLsizei)(batch.indices.length);
+
+                glGenVertexArrays(1, &gpu.vao);
+                glGenBuffers(1, &gpu.vbo);
+                glGenBuffers(1, &gpu.ebo);
+
+                glBindVertexArray(gpu.vao);
+
+                glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    vertices.length * SkinnedMeshVertex.sizeof,
+                    vertices.ptr,
+                    GL_STATIC_DRAW);
+
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+                glBufferData(
+                    GL_ELEMENT_ARRAY_BUFFER,
+                    batch.indices.length * uint.sizeof,
+                    batch.indices.ptr,
+                    GL_STATIC_DRAW);
+
+                enum stride = SkinnedMeshVertex.sizeof;
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 3));
+                glEnableVertexAttribArray(1);
+                glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 6));
+                glEnableVertexAttribArray(2);
+                glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 6 + float.sizeof * 4));
+                glEnableVertexAttribArray(3);
+
+                glBindVertexArray(0);
+            }
+            else
+            {
+                MeshVertex[] vertices;
+                vertices.length = batch.vertexCount;
+
+                for (size_t i = 0; i < batch.vertexCount; ++i)
+                {
+                    size_t base = i * 3;
+                    vertices[i].position = [
+                        batch.vertices[base],
+                        batch.vertices[base + 1],
+                        batch.vertices[base + 2]
+                    ];
+                    vertices[i].normal = [
+                        batch.normals[base],
+                        batch.normals[base + 1],
+                        batch.normals[base + 2]
+                    ];
+                }
+
+                gpu.indexCount = cast(GLsizei)(batch.indices.length);
+
+                glGenVertexArrays(1, &gpu.vao);
+                glGenBuffers(1, &gpu.vbo);
+                glGenBuffers(1, &gpu.ebo);
+
+                glBindVertexArray(gpu.vao);
+
+                glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+                glBufferData(GL_ARRAY_BUFFER, vertices.length * MeshVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
+
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, batch.indices.length * uint.sizeof, batch.indices.ptr, GL_STATIC_DRAW);
+
+                enum stride = MeshVertex.sizeof;
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 3));
+                glEnableVertexAttribArray(1);
+
+                glBindVertexArray(0);
             }
 
-            gpu.indexCount = cast(GLsizei)(batch.indices.length);
-
-            glGenVertexArrays(1, &gpu.vao);
-            glGenBuffers(1, &gpu.vbo);
-            glGenBuffers(1, &gpu.ebo);
-
-            glBindVertexArray(gpu.vao);
-
-            glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
-            glBufferData(GL_ARRAY_BUFFER, vertices.length * MeshVertex.sizeof, vertices.ptr, GL_STATIC_DRAW);
-
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, batch.indices.length * uint.sizeof, batch.indices.ptr, GL_STATIC_DRAW);
-
-            enum stride = MeshVertex.sizeof;
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, null);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, cast(void*)(float.sizeof * 3));
-            glEnableVertexAttribArray(1);
-
-            glBindVertexArray(0);
             _triangles ~= gpu;
         }
 
@@ -233,23 +330,58 @@ struct GeoMesh
         ShaderProgram lineShader,
         mat4 modelMatrix,
         mat4 mvpMatrix,
-        bool showNormals = false) const
+        bool showNormals = false,
+        ShaderProgram skinnedMeshShader = ShaderProgram.init,
+        mat4[] skinMatrices = null) const
     {
         foreach (batch; _triangles)
         {
             if (batch.vao == 0 || batch.indexCount == 0)
                 continue;
 
-            meshShader.use();
-            glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
-            glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+            if (batch.skinned && skinnedMeshShader.program != 0 && skinMatrices.length > 0)
+            {
+                skinnedMeshShader.use();
+                glUniformMatrix4fv(skinnedMeshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+                glUniformMatrix4fv(skinnedMeshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
 
-            float[9] normalMatrix = extractNormalMatrix(modelMatrix);
-            glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
+                const count = min(skinMatrices.length, MAX_GPU_BONES);
+                GLint baseLoc = skinnedMeshShader.location("uBoneMatrices");
+                if (baseLoc < 0)
+                    baseLoc = skinnedMeshShader.location("uBoneMatrices[0]");
+                if (baseLoc >= 0)
+                {
+                    foreach (i; 0 .. count)
+                    {
+                        glUniformMatrix4fv(
+                            baseLoc + cast(GLint)i,
+                            1,
+                            GL_TRUE,
+                            skinMatrices[i].value_ptr);
+                    }
+                }
 
-            glBindVertexArray(batch.vao);
-            glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
-            glBindVertexArray(0);
+                glBindVertexArray(batch.vao);
+                glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
+                glBindVertexArray(0);
+            }
+            else if (batch.skinned)
+            {
+                continue;
+            }
+            else
+            {
+                meshShader.use();
+                glUniformMatrix4fv(meshShader.location("uModel"), 1, GL_TRUE, modelMatrix.value_ptr);
+                glUniformMatrix4fv(meshShader.location("uMVP"), 1, GL_TRUE, mvpMatrix.value_ptr);
+
+                float[9] normalMatrix = extractNormalMatrix(modelMatrix);
+                glUniformMatrix3fv(meshShader.location("uNormalMatrix"), 1, GL_TRUE, normalMatrix.ptr);
+
+                glBindVertexArray(batch.vao);
+                glDrawElements(GL_TRIANGLES, batch.indexCount, GL_UNSIGNED_INT, null);
+                glBindVertexArray(0);
+            }
         }
 
         if (showNormals)
@@ -333,6 +465,8 @@ struct GeoMesh
             batch.vao = 0;
         }
         batch.indexCount = 0;
+        batch.skinned = false;
+        batch.boneCount = 0;
     }
 
     private static void destroyLineBatch(ref LineGpuBatch batch)

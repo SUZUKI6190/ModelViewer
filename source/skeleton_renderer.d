@@ -9,6 +9,7 @@ import gl3n.linalg;
 import geo_model;
 import mesh;
 import shader;
+import skeleton;
 
 enum SkeletonDisplayStyle
 {
@@ -46,7 +47,6 @@ struct SkeletonRenderer
     private bool _uploaded;
 
     enum coneSegments = 10;
-    enum minBoneLength = 1e-4f;
     enum radiusFactor = 0.10f;
     enum minBaseRadius = 0.02f;
     enum axisLengthFactor = 0.50f;
@@ -190,6 +190,93 @@ struct SkeletonRenderer
         }
     }
 
+    void drawPosed(
+        const(GeoModel) model,
+        const(mat4[]) boneWorldMatrices,
+        SkeletonDisplayStyle style,
+        bool showBoneAxes,
+        bool showRollMark,
+        ShaderProgram lineShader,
+        ShaderProgram skeletonMeshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix)
+    {
+        LineVertex[] boneVertices;
+        uint[] boneIndices;
+        LineVertex[] axisXVertices;
+        uint[] axisXIndices;
+        LineVertex[] axisYVertices;
+        uint[] axisYIndices;
+        LineVertex[] axisZVertices;
+        uint[] axisZIndices;
+        MeshVertex[] coneVertices;
+        uint[] coneIndices;
+        MeshVertex[] rollVertices;
+        uint[] rollIndices;
+
+        MeshVertex[] unitCone;
+        uint[] unitConeIndices;
+        buildUnitCone(unitCone, unitConeIndices, coneSegments);
+
+        MeshVertex[] unitRollMark;
+        uint[] unitRollMarkIndices;
+        buildUnitRollMark(unitRollMark, unitRollMarkIndices);
+
+        size_t boneIndex = 0;
+        foreach (batch; model.triangles)
+            collectSkeletonGeometryPosed(
+                batch.skeleton,
+                boneWorldMatrices,
+                boneIndex,
+                unitCone,
+                unitConeIndices,
+                unitRollMark,
+                unitRollMarkIndices,
+                boneVertices,
+                boneIndices,
+                axisXVertices,
+                axisXIndices,
+                axisYVertices,
+                axisYIndices,
+                axisZVertices,
+                axisZIndices,
+                coneVertices,
+                coneIndices,
+                rollVertices,
+                rollIndices);
+        foreach (batch; model.lines)
+            collectSkeletonGeometryPosed(
+                batch.skeleton,
+                boneWorldMatrices,
+                boneIndex,
+                unitCone,
+                unitConeIndices,
+                unitRollMark,
+                unitRollMarkIndices,
+                boneVertices,
+                boneIndices,
+                axisXVertices,
+                axisXIndices,
+                axisYVertices,
+                axisYIndices,
+                axisZVertices,
+                axisZIndices,
+                coneVertices,
+                coneIndices,
+                rollVertices,
+                rollIndices);
+
+        updateLineBatch(_boneLines, boneVertices, boneIndices);
+        updateLineBatch(_axisXLines, axisXVertices, axisXIndices);
+        updateLineBatch(_axisYLines, axisYVertices, axisYIndices);
+        updateLineBatch(_axisZLines, axisZVertices, axisZIndices);
+        updateMeshBatch(_coneMesh, coneVertices, coneIndices);
+        updateMeshBatch(_rollMarkMesh, rollVertices, rollIndices);
+        _uploaded = true;
+
+        draw(style, showBoneAxes, showRollMark, lineShader, skeletonMeshShader, modelMatrix, mvpMatrix);
+    }
+
     void destroyGpu()
     {
         destroyLineBatch(_boneLines);
@@ -270,7 +357,7 @@ struct SkeletonRenderer
         vec3 zAxis;
         computeBoneFrame(bone, xAxis, yAxis, zAxis);
 
-        mat4 boneMatrix = boneLocalMatrix(bone.pos, xAxis, yAxis, zAxis);
+        mat4 boneMatrix = bindMatrixFromBone(bone);
         float length = (bone.tailPos - bone.pos).length;
         float baseRadius = length > minBoneLength
             ? max(length * radiusFactor, minBaseRadius)
@@ -313,6 +400,145 @@ struct SkeletonRenderer
                 rollVertices,
                 rollIndices);
         }
+    }
+
+    private static void collectSkeletonGeometryPosed(
+        const(Skeleton) skeleton,
+        const(mat4[]) boneWorldMatrices,
+        ref size_t boneIndex,
+        MeshVertex[] unitCone,
+        uint[] unitConeIndices,
+        MeshVertex[] unitRollMark,
+        uint[] unitRollMarkIndices,
+        ref LineVertex[] boneVertices,
+        ref uint[] boneIndices,
+        ref LineVertex[] axisXVertices,
+        ref uint[] axisXIndices,
+        ref LineVertex[] axisYVertices,
+        ref uint[] axisYIndices,
+        ref LineVertex[] axisZVertices,
+        ref uint[] axisZIndices,
+        ref MeshVertex[] coneVertices,
+        ref uint[] coneIndices,
+        ref MeshVertex[] rollVertices,
+        ref uint[] rollIndices)
+    {
+        if (!skeleton.isValid)
+            return;
+
+        foreach (bone; skeleton.bones)
+        {
+            collectBoneGeometryPosed(
+                bone,
+                boneWorldMatrices,
+                boneIndex,
+                unitCone,
+                unitConeIndices,
+                unitRollMark,
+                unitRollMarkIndices,
+                boneVertices,
+                boneIndices,
+                axisXVertices,
+                axisXIndices,
+                axisYVertices,
+                axisYIndices,
+                axisZVertices,
+                axisZIndices,
+                coneVertices,
+                coneIndices,
+                rollVertices,
+                rollIndices);
+        }
+    }
+
+    private static void collectBoneGeometryPosed(
+        ref const(BoneNode) bone,
+        const(mat4[]) boneWorldMatrices,
+        ref size_t boneIndex,
+        MeshVertex[] unitCone,
+        uint[] unitConeIndices,
+        MeshVertex[] unitRollMark,
+        uint[] unitRollMarkIndices,
+        ref LineVertex[] boneVertices,
+        ref uint[] boneIndices,
+        ref LineVertex[] axisXVertices,
+        ref uint[] axisXIndices,
+        ref LineVertex[] axisYVertices,
+        ref uint[] axisYIndices,
+        ref LineVertex[] axisZVertices,
+        ref uint[] axisZIndices,
+        ref MeshVertex[] coneVertices,
+        ref uint[] coneIndices,
+        ref MeshVertex[] rollVertices,
+        ref uint[] rollIndices)
+    {
+        mat4 boneMatrix = boneIndex < boneWorldMatrices.length
+            ? boneWorldMatrices[boneIndex]
+            : bindMatrixFromBone(bone);
+        boneIndex++;
+
+        vec3 xAxis = vec3(boneMatrix[0][0], boneMatrix[1][0], boneMatrix[2][0]);
+        vec3 yAxis = vec3(boneMatrix[0][1], boneMatrix[1][1], boneMatrix[2][1]);
+        vec3 zAxis = vec3(boneMatrix[0][2], boneMatrix[1][2], boneMatrix[2][2]);
+
+        float length = (bone.tailPos - bone.pos).length;
+        float baseRadius = length > minBoneLength
+            ? max(length * radiusFactor, minBaseRadius)
+            : minBaseRadius;
+        float axisLen = max(baseRadius * axisLengthFactor, minBaseRadius);
+
+        vec3 posedOrigin = transformPoint(boneMatrix, vec3(0, 0, 0));
+        vec3 posedTail = transformPoint(boneMatrix, vec3(0, length, 0));
+        collectLineSegment(posedOrigin, posedTail, boneVertices, boneIndices);
+
+        collectAxisLine(posedOrigin, xAxis, axisLen, axisXVertices, axisXIndices);
+        collectAxisLine(posedOrigin, yAxis, axisLen, axisYVertices, axisYIndices);
+        collectAxisLine(posedOrigin, zAxis, axisLen, axisZVertices, axisZIndices);
+
+        if (length > minBoneLength)
+        {
+            mat4 coneTransform = boneMatrix * mat4.scaling(baseRadius, length, baseRadius);
+            appendTransformedMesh(unitCone, unitConeIndices, coneTransform, coneVertices, coneIndices);
+
+            mat4 rollTransform = boneMatrix * mat4.scaling(baseRadius, baseRadius, baseRadius);
+            appendTransformedMesh(unitRollMark, unitRollMarkIndices, rollTransform, rollVertices, rollIndices);
+        }
+
+        foreach (child; bone.children)
+        {
+            collectBoneGeometryPosed(
+                child,
+                boneWorldMatrices,
+                boneIndex,
+                unitCone,
+                unitConeIndices,
+                unitRollMark,
+                unitRollMarkIndices,
+                boneVertices,
+                boneIndices,
+                axisXVertices,
+                axisXIndices,
+                axisYVertices,
+                axisYIndices,
+                axisZVertices,
+                axisZIndices,
+                coneVertices,
+                coneIndices,
+                rollVertices,
+                rollIndices);
+        }
+    }
+
+    private static void collectLineSegment(
+        vec3 start,
+        vec3 end,
+        ref LineVertex[] vertices,
+        ref uint[] indices)
+    {
+        uint base = cast(uint)vertices.length;
+        vertices ~= LineVertex([start.x, start.y, start.z]);
+        vertices ~= LineVertex([end.x, end.y, end.z]);
+        indices ~= [base, base + 1];
     }
 
     private static void collectBoneLines(
@@ -393,47 +619,6 @@ struct SkeletonRenderer
         indices ~= [0, 1, 2];
     }
 
-    private static void computeBoneFrame(
-        ref const(BoneNode) bone,
-        out vec3 xAxis,
-        out vec3 yAxis,
-        out vec3 zAxis)
-    {
-        vec3 delta = bone.tailPos - bone.pos;
-        if (delta.length_squared > minBoneLength * minBoneLength)
-            yAxis = delta.normalized;
-        else
-            yAxis = normalizeAxis(bone.yAxis);
-
-        xAxis = normalizeAxis(bone.xAxis);
-        xAxis = xAxis - yAxis * dot(xAxis, yAxis);
-        if (xAxis.length_squared <= 1e-12f)
-        {
-            vec3 reference = fabs(yAxis.y) < 0.9f ? vec3(0, 1, 0) : vec3(1, 0, 0);
-            xAxis = cross(reference, yAxis);
-        }
-        xAxis = xAxis.normalized;
-        zAxis = cross(xAxis, yAxis).normalized;
-    }
-
-    private static mat4 boneLocalMatrix(vec3 origin, vec3 xAxis, vec3 yAxis, vec3 zAxis)
-    {
-        mat4 rotation = mat4(
-            xAxis.x, yAxis.x, zAxis.x, 0.0f,
-            xAxis.y, yAxis.y, zAxis.y, 0.0f,
-            xAxis.z, yAxis.z, zAxis.z, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f,
-        );
-        return mat4.translation(origin) * rotation;
-    }
-
-    private static vec3 normalizeAxis(vec3 axis)
-    {
-        if (axis.length_squared <= 1e-12f)
-            return vec3(0, 1, 0);
-        return axis.normalized;
-    }
-
     private static void appendTransformedMesh(
         MeshVertex[] unitMesh,
         uint[] unitIndices,
@@ -472,6 +657,64 @@ struct SkeletonRenderer
         if (result.length_squared <= 1e-12f)
             return normal;
         return result.normalized;
+    }
+
+    private static void updateLineBatch(
+        ref GpuLineBatch batch,
+        LineVertex[] vertices,
+        uint[] indices)
+    {
+        if (vertices.length == 0 || indices.length == 0)
+        {
+            batch.valid = false;
+            batch.indexCount = 0;
+            return;
+        }
+
+        if (!batch.valid)
+        {
+            uploadLineBatch(batch, vertices, indices);
+            return;
+        }
+
+        batch.indexCount = cast(GLsizei)(indices.length);
+
+        glBindVertexArray(batch.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, batch.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vertices.length * LineVertex.sizeof, vertices.ptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, batch.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.length * uint.sizeof, indices.ptr, GL_DYNAMIC_DRAW);
+        glBindVertexArray(0);
+        batch.valid = true;
+    }
+
+    private static void updateMeshBatch(
+        ref GpuMeshBatch batch,
+        MeshVertex[] vertices,
+        uint[] indices)
+    {
+        if (vertices.length == 0 || indices.length == 0)
+        {
+            batch.valid = false;
+            batch.indexCount = 0;
+            return;
+        }
+
+        if (!batch.valid)
+        {
+            uploadMeshBatch(batch, vertices, indices);
+            return;
+        }
+
+        batch.indexCount = cast(GLsizei)(indices.length);
+
+        glBindVertexArray(batch.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, batch.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vertices.length * MeshVertex.sizeof, vertices.ptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, batch.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.length * uint.sizeof, indices.ptr, GL_DYNAMIC_DRAW);
+        glBindVertexArray(0);
+        batch.valid = true;
     }
 
     private static void uploadLineBatch(

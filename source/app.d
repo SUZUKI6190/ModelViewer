@@ -3,6 +3,7 @@ module app;
 import std.conv;
 import std.exception;
 import std.file;
+import std.math;
 import std.path;
 import std.stdio;
 import std.string;
@@ -24,7 +25,9 @@ import geo_parser;
 import mesh;
 import settings;
 import shader;
+import skeleton;
 import skeleton_renderer;
+import skinning;
 
 mixin APP_ENTRY_POINT;
 
@@ -45,6 +48,8 @@ struct AppState
     bool showCornerAxes = true;
     float axisLength = 1.0f;
     bool axisGpuDirty = true;
+    SkeletonRuntime skeletonRuntime;
+    bool skinningActive;
 }
 
 class ViewportWidget : Widget
@@ -53,9 +58,14 @@ class ViewportWidget : Widget
     ShaderProgram* _meshShader;
     ShaderProgram* _lineShader;
     ShaderProgram* _skeletonMeshShader;
+    ShaderProgram* _skinnedMeshShader;
     bool _shaderCompileFailed;
     void delegate() _onGpuStateChanged;
     bool _gpuStateReported;
+    uint _animFrame;
+    ulong _animTimerId;
+    bool _axisLabelsGpuDirty;
+    bool _skeletonGpuDirty;
     AxisGizmo _axisGizmo;
     AxisLabelRenderer _axisLabels;
     SkeletonRenderer _skeletonRenderer;
@@ -65,6 +75,7 @@ class ViewportWidget : Widget
         ShaderProgram* meshShader,
         ShaderProgram* lineShader,
         ShaderProgram* skeletonMeshShader,
+        ShaderProgram* skinnedMeshShader,
         void delegate() onGpuStateChanged = null)
     {
         super("viewport");
@@ -72,7 +83,9 @@ class ViewportWidget : Widget
         _meshShader = meshShader;
         _lineShader = lineShader;
         _skeletonMeshShader = skeletonMeshShader;
+        _skinnedMeshShader = skinnedMeshShader;
         _onGpuStateChanged = onGpuStateChanged;
+        _animFrame = 0;
         layoutWidth = FILL_PARENT;
         layoutHeight = FILL_PARENT;
         layoutWeight = 1;
@@ -100,6 +113,19 @@ class ViewportWidget : Widget
         {
             reportGpuStateOnce();
             return false;
+        }
+
+        // GPU teardown must run only while the OpenGL context is current (Win32).
+        if (_axisLabelsGpuDirty)
+        {
+            _axisLabels.destroyGpu();
+            _axisLabelsGpuDirty = false;
+        }
+
+        if (_skeletonGpuDirty)
+        {
+            _skeletonRenderer.destroyGpu();
+            _skeletonGpuDirty = false;
         }
 
         if (_meshShader.program == 0)
@@ -135,6 +161,17 @@ class ViewportWidget : Widget
             }
         }
 
+        if (_state.skinningActive && _skinnedMeshShader.program == 0)
+        {
+            if (!_skinnedMeshShader.compile(skinnedMeshVertexShader, skinnedMeshFragmentShader))
+            {
+                _shaderCompileFailed = true;
+                _state.loadError = "Failed to compile skinned mesh shaders";
+                reportGpuStateOnce();
+                return false;
+            }
+        }
+
         if (_state.meshGpuDirty)
         {
             _state.mesh.destroyGpu();
@@ -151,7 +188,7 @@ class ViewportWidget : Widget
             }
         }
 
-        if (_state.model.hasSkeleton)
+        if (_state.model.hasSkeleton && !_skeletonRenderer.uploaded)
         {
             if (!_skeletonRenderer.upload(_state.model))
             {
@@ -159,10 +196,6 @@ class ViewportWidget : Widget
                 reportGpuStateOnce();
                 return false;
             }
-        }
-        else if (_skeletonRenderer.uploaded)
-        {
-            _skeletonRenderer.destroyGpu();
         }
 
         if (_state.axisGpuDirty || !_axisGizmo.uploaded)
@@ -187,8 +220,36 @@ class ViewportWidget : Widget
         _gpuStateReported = false;
         _shaderCompileFailed = false;
         _state.axisGpuDirty = true;
-        _axisLabels.destroyGpu();
-        _skeletonRenderer.destroyGpu();
+        _axisLabelsGpuDirty = true;
+        _skeletonGpuDirty = true;
+        _animFrame = 0;
+        stopAnimationTimer();
+    }
+
+    void updateAnimationTimer()
+    {
+        stopAnimationTimer();
+        if (_state.skinningActive)
+            _animTimerId = setTimer(16);
+    }
+
+    private void stopAnimationTimer()
+    {
+        if (_animTimerId != 0)
+        {
+            cancelTimer(_animTimerId);
+            _animTimerId = 0;
+        }
+    }
+
+    override bool onTimer(ulong id)
+    {
+        if (id == _animTimerId && _state.skinningActive)
+        {
+            invalidate();
+            return true;
+        }
+        return false;
     }
 
     override bool onMouseEvent(MouseEvent event)
@@ -269,7 +330,11 @@ class ViewportWidget : Widget
         }
 
         if (!ensureGpuResources())
+        {
+            if (_state.loadError.length > 0)
+                reportGpuStateOnce();
             return;
+        }
 
         float scrollDelta = _state.camera.consumeScrollPending();
         if (scrollDelta != 0.0f)
@@ -289,18 +354,52 @@ class ViewportWidget : Widget
             cast(float)rc.width, cast(float)rc.height);
         gl3n.linalg.mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
 
-        _state.mesh.draw(*_meshShader, *_lineShader, modelMatrix, mvpMatrix, _state.showNormals);
-
-        if (_state.showSkeleton && _skeletonRenderer.hasContent)
+        gl3n.linalg.mat4[] skinMatrices = null;
+        if (_state.skinningActive)
         {
-            _skeletonRenderer.draw(
-                _state.skeletonStyle,
-                _state.showBoneAxes,
-                _state.showRollMark,
-                *_lineShader,
-                *_skeletonMeshShader,
-                modelMatrix,
-                mvpMatrix);
+            enum rotationPeriodFrames = 240;
+            _animFrame++;
+            const angle = cast(float)(_animFrame % rotationPeriodFrames)
+                / cast(float)rotationPeriodFrames * 2.0f * PI;
+            _state.skeletonRuntime.applyAutoRotation(angle, 0);
+            skinMatrices = _state.skeletonRuntime.skinMatrices;
+        }
+
+        _state.mesh.draw(
+            *_meshShader,
+            *_lineShader,
+            modelMatrix,
+            mvpMatrix,
+            _state.showNormals,
+            *_skinnedMeshShader,
+            skinMatrices);
+
+        if (_state.showSkeleton && (_skeletonRenderer.hasContent || _state.skinningActive))
+        {
+            if (_state.skinningActive && _state.skeletonRuntime.active)
+            {
+                _skeletonRenderer.drawPosed(
+                    _state.model,
+                    _state.skeletonRuntime.currentWorld,
+                    _state.skeletonStyle,
+                    _state.showBoneAxes,
+                    _state.showRollMark,
+                    *_lineShader,
+                    *_skeletonMeshShader,
+                    modelMatrix,
+                    mvpMatrix);
+            }
+            else if (_skeletonRenderer.hasContent)
+            {
+                _skeletonRenderer.draw(
+                    _state.skeletonStyle,
+                    _state.showBoneAxes,
+                    _state.showRollMark,
+                    *_lineShader,
+                    *_skeletonMeshShader,
+                    modelMatrix,
+                    mvpMatrix);
+            }
         }
 
         if (_state.showWorldAxes)
@@ -345,6 +444,7 @@ class ModelViewerWidget : HorizontalLayout
     ShaderProgram _meshShader;
     ShaderProgram _lineShader;
     ShaderProgram _skeletonMeshShader;
+    ShaderProgram _skinnedMeshShader;
     Window _window;
 
     EditLine _pathEdit;
@@ -366,6 +466,8 @@ class ModelViewerWidget : HorizontalLayout
     CheckBox _showCornerAxesCheck;
     VerticalLayout _panel;
     ViewportWidget _viewport;
+    string _pendingModelPath;
+    ulong _deferredReloadTimerId;
 
     this(Window window, AppState* state)
     {
@@ -506,7 +608,12 @@ class ModelViewerWidget : HorizontalLayout
         addChild(panel);
 
         _viewport = new ViewportWidget(
-            _state, &_meshShader, &_lineShader, &_skeletonMeshShader, &onGpuStateChanged);
+            _state,
+            &_meshShader,
+            &_lineShader,
+            &_skeletonMeshShader,
+            &_skinnedMeshShader,
+            &onGpuStateChanged);
         addChild(_viewport);
 
         if (!tryLoadModel())
@@ -516,6 +623,7 @@ class ModelViewerWidget : HorizontalLayout
                 " vertices, ", _state.model.triangleCount, " triangles, ",
                 _state.model.lineBatchCount, " line batches)");
 
+        _viewport.invalidate();
         refreshUi();
     }
 
@@ -541,6 +649,7 @@ class ModelViewerWidget : HorizontalLayout
         _meshShader.program = 0;
         _lineShader.program = 0;
         _skeletonMeshShader.program = 0;
+        _skinnedMeshShader.program = 0;
     }
 
     override bool onKeyEvent(KeyEvent event)
@@ -551,6 +660,21 @@ class ModelViewerWidget : HorizontalLayout
             return true;
         }
         return super.onKeyEvent(event);
+    }
+
+    override bool onTimer(ulong id)
+    {
+        if (id == _deferredReloadTimerId)
+        {
+            _deferredReloadTimerId = 0;
+            if (_pendingModelPath.length > 0)
+            {
+                setModelPath(_pendingModelPath);
+                reloadModel();
+            }
+            return false;
+        }
+        return super.onTimer(id);
     }
 
     private void refreshUi()
@@ -585,8 +709,10 @@ class ModelViewerWidget : HorizontalLayout
             immutable path = result.stringParam;
             if (path.length == 0)
                 return;
-            setModelPath(path);
-            reloadModel();
+            _pendingModelPath = path;
+            if (_deferredReloadTimerId != 0)
+                cancelTimer(_deferredReloadTimerId);
+            _deferredReloadTimerId = setTimer(50);
         };
         dlg.show();
         return true;
@@ -618,6 +744,7 @@ class ModelViewerWidget : HorizontalLayout
             Log.i("Loaded: ", _state.model.name);
 
         refreshUi();
+        _viewport.invalidate();
         return true;
     }
 
@@ -723,8 +850,25 @@ class ModelViewerWidget : HorizontalLayout
             _state.axisLength = axisLen > 1e-4f ? axisLen : 1.0f;
             _state.axisGpuDirty = true;
 
+            _state.skinningActive = false;
+            _state.skeletonRuntime = SkeletonRuntime.init;
+            foreach (batch; _state.model.triangles)
+            {
+                if (!batch.skeleton.isValid)
+                    continue;
+
+                auto skinningData = buildSkinningData(batch);
+                if (skinningData.influencedVertices == 0)
+                    continue;
+
+                _state.skeletonRuntime.build(batch.skeleton);
+                _state.skinningActive = _state.skeletonRuntime.active;
+                break;
+            }
+
             _state.loadError = "";
             saveLastModelPath(_state.modelPath);
+            _viewport.updateAnimationTimer();
             return true;
         }
         catch (Exception ex)

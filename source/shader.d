@@ -221,6 +221,80 @@ void main()
 }
 };
 
+enum skinnedMeshVertexShader = q{
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec4 aBoneIds;
+layout (location = 3) in vec4 aWeights;
+
+uniform mat4 uMVP;
+uniform mat4 uModel;
+uniform mat4 uBoneMatrices[32];
+
+out vec3 vNormal;
+out vec3 vWorldPos;
+
+mat4 fetchBoneMatrix(float boneId)
+{
+    int index = int(boneId + 0.5);
+    if (index < 0 || index >= 32)
+        return mat4(1.0);
+    return uBoneMatrices[index];
+}
+
+mat4 buildSkinMatrix()
+{
+    mat4 result = mat4(0.0);
+    if (aWeights.x > 0.0)
+        result += fetchBoneMatrix(aBoneIds.x) * aWeights.x;
+    if (aWeights.y > 0.0)
+        result += fetchBoneMatrix(aBoneIds.y) * aWeights.y;
+    if (aWeights.z > 0.0)
+        result += fetchBoneMatrix(aBoneIds.z) * aWeights.z;
+    if (aWeights.w > 0.0)
+        result += fetchBoneMatrix(aBoneIds.w) * aWeights.w;
+    if (result == mat4(0.0))
+        return mat4(1.0);
+    return result;
+}
+
+void main()
+{
+    mat4 skinMatrix = buildSkinMatrix();
+    vec4 skinnedPos = skinMatrix * vec4(aPos, 1.0);
+    mat3 skinNormalMatrix = mat3(skinMatrix);
+    vec3 skinnedNormal = skinNormalMatrix * aNormal;
+
+    vWorldPos = vec3(uModel * skinnedPos);
+    vNormal = normalize(mat3(uModel) * skinnedNormal);
+    gl_Position = uMVP * skinnedPos;
+}
+};
+
+enum skinnedMeshFragmentShader = q{
+#version 330 core
+in vec3 vNormal;
+in vec3 vWorldPos;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 baseColor = vec3(0.62, 0.70, 0.82);
+    vec3 lightDir = normalize(vec3(0.4, 0.9, 0.6));
+    vec3 viewDir = normalize(-vWorldPos);
+    vec3 halfDir = normalize(lightDir + viewDir);
+
+    float ambient = 0.22;
+    float diffuse = max(dot(vNormal, lightDir), 0.0);
+    float specular = pow(max(dot(vNormal, halfDir), 0.0), 48.0) * 0.18;
+
+    vec3 color = baseColor * (ambient + diffuse * 0.78) + vec3(specular);
+    FragColor = vec4(color, 1.0);
+}
+};
+
 enum labelFragmentShader = q{
 #version 330 core
 in vec2 vTex;
