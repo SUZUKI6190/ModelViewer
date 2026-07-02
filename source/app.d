@@ -18,6 +18,7 @@ import dlangui.dialogs.filedlg;
 import dlangui.graphics.glsupport : GLProgram, VAO;
 import dlangui.graphics.resources;
 import dlangui.widgets.combobox;
+import dlangui.widgets.scroll : ScrollWidget;
 import dlangui.widgets.scrollbar;
 static import gl3n.linalg;
 
@@ -604,18 +605,25 @@ class ModelViewerWidget : HorizontalLayout
         panel.padding = Rect(8, 8, 8, 8);
         panel.backgroundColor = 0xFFF2F2F2u;
 
+        auto scroll = new ScrollWidget("panelScroll");
+        scroll.layoutWidth = FILL_PARENT;
+        scroll.layoutHeight = FILL_PARENT;
+
+        auto scrollContent = new VerticalLayout("panelScrollContent");
+        scrollContent.layoutWidth = FILL_PARENT;
+
         auto title = new TextWidget("title", "Geo XML Viewer"d);
         title.fontSize = 18;
         title.fontWeight = FontWeight.Bold;
-        panel.addChild(title);
+        scrollContent.addChild(title);
 
-        panel.addChild(new TextWidget("modelLabel", "Model"d));
+        scrollContent.addChild(new TextWidget("modelLabel", "Model"d));
 
         _pathEdit = new EditLine("path");
         _pathEdit.layoutWidth = FILL_PARENT;
         _pathEdit.readOnly = true;
         _pathEdit.text = _state.modelPath.to!dstring;
-        panel.addChild(_pathEdit);
+        scrollContent.addChild(_pathEdit);
 
         auto modelButtons = new HorizontalLayout("modelButtons");
         modelButtons.layoutWidth = FILL_PARENT;
@@ -630,44 +638,44 @@ class ModelViewerWidget : HorizontalLayout
         loadButton.click = &onLoadClicked;
         modelButtons.addChild(loadButton);
 
-        panel.addChild(modelButtons);
+        scrollContent.addChild(modelButtons);
 
         _errorText = new TextWidget("error");
         _errorText.textColor = 0xFFFF5959u;
         _errorText.visibility = Visibility.Gone;
-        panel.addChild(_errorText);
+        scrollContent.addChild(_errorText);
 
         _nameText = new TextWidget("name");
         _nameText.visibility = Visibility.Gone;
-        panel.addChild(_nameText);
+        scrollContent.addChild(_nameText);
 
         _vertexText = new TextWidget("vertices");
         _vertexText.visibility = Visibility.Gone;
-        panel.addChild(_vertexText);
+        scrollContent.addChild(_vertexText);
 
         _triangleText = new TextWidget("triangles");
         _triangleText.visibility = Visibility.Gone;
-        panel.addChild(_triangleText);
+        scrollContent.addChild(_triangleText);
 
         _lineText = new TextWidget("lines");
         _lineText.visibility = Visibility.Gone;
-        panel.addChild(_lineText);
+        scrollContent.addChild(_lineText);
 
         _boneText = new TextWidget("bones");
         _boneText.visibility = Visibility.Gone;
-        panel.addChild(_boneText);
+        scrollContent.addChild(_boneText);
 
         _showNormalsCheck = new CheckBox("showNormals", "Show normals"d);
         _showNormalsCheck.checked = _state.showNormals;
         _showNormalsCheck.visibility = Visibility.Gone;
         _showNormalsCheck.addOnCheckChangeListener(&onShowNormalsChanged);
-        panel.addChild(_showNormalsCheck);
+        scrollContent.addChild(_showNormalsCheck);
 
         _showSkeletonCheck = new CheckBox("showSkeleton", "Show skeleton"d);
         _showSkeletonCheck.checked = _state.showSkeleton;
         _showSkeletonCheck.visibility = Visibility.Gone;
         _showSkeletonCheck.addOnCheckChangeListener(&onShowSkeletonChanged);
-        panel.addChild(_showSkeletonCheck);
+        scrollContent.addChild(_showSkeletonCheck);
 
         _skeletonOptions = new VerticalLayout("skeletonOptions");
         _skeletonOptions.layoutWidth = FILL_PARENT;
@@ -698,7 +706,7 @@ class ModelViewerWidget : HorizontalLayout
         _showRollMarkCheck.addOnCheckChangeListener(&onShowRollMarkChanged);
         _skeletonOptions.addChild(_showRollMarkCheck);
 
-        panel.addChild(_skeletonOptions);
+        scrollContent.addChild(_skeletonOptions);
 
         _poseOptions = new VerticalLayout("poseOptions");
         _poseOptions.layoutWidth = FILL_PARENT;
@@ -732,7 +740,7 @@ class ModelViewerWidget : HorizontalLayout
         _resetPoseButton.click = &onResetPoseClicked;
         _poseOptions.addChild(_resetPoseButton);
 
-        panel.addChild(_poseOptions);
+        scrollContent.addChild(_poseOptions);
 
         _vertexGroupOptions = new VerticalLayout("vertexGroupOptions");
         _vertexGroupOptions.layoutWidth = FILL_PARENT;
@@ -750,31 +758,34 @@ class ModelViewerWidget : HorizontalLayout
         _vertexGroupCombo.itemClick = &onVertexGroupSelected;
         _vertexGroupOptions.addChild(_vertexGroupCombo);
 
-        panel.addChild(_vertexGroupOptions);
+        scrollContent.addChild(_vertexGroupOptions);
 
         _showWorldAxesCheck = new CheckBox("showWorldAxes", "Show world axes"d);
         _showWorldAxesCheck.checked = _state.showWorldAxes;
         _showWorldAxesCheck.addOnCheckChangeListener(&onShowWorldAxesChanged);
-        panel.addChild(_showWorldAxesCheck);
+        scrollContent.addChild(_showWorldAxesCheck);
 
         _showCornerAxesCheck = new CheckBox("showCornerAxes", "Show corner axes"d);
         _showCornerAxesCheck.checked = _state.showCornerAxes;
         _showCornerAxesCheck.addOnCheckChangeListener(&onShowCornerAxesChanged);
-        panel.addChild(_showCornerAxesCheck);
+        scrollContent.addChild(_showCornerAxesCheck);
 
         auto spacer = new VSpacer();
         spacer.layoutHeight = 12;
-        panel.addChild(spacer);
+        scrollContent.addChild(spacer);
 
-        panel.addChild(new TextWidget("controlsTitle", "Controls"d));
-        panel.addChild(new TextWidget("ctrl1", "• Left drag: rotate (arcball)"d));
-        panel.addChild(new TextWidget("ctrl2", "• Right drag: pan"d));
-        panel.addChild(new TextWidget("ctrl3", "• Wheel: zoom"d));
-        panel.addChild(new TextWidget("ctrl4", "• Shift + drag: fast pan"d));
-        panel.addChild(new TextWidget("ctrl5", "• R: reset camera"d));
-        panel.addChild(new TextWidget("ctrl6", "• Shift+R: reset bone pose"d));
-        panel.addChild(new TextWidget("ctrl7", "• Click skeleton: select bone"d));
-        panel.addChild(new TextWidget("ctrl8", "• Esc: quit"d));
+        scrollContent.addChild(new TextWidget("controlsTitle", "Controls"d));
+        scrollContent.addChild(new TextWidget("ctrl1", "• Left drag: rotate (arcball)"d));
+        scrollContent.addChild(new TextWidget("ctrl2", "• Right drag: pan"d));
+        scrollContent.addChild(new TextWidget("ctrl3", "• Wheel: zoom"d));
+        scrollContent.addChild(new TextWidget("ctrl4", "• Shift + drag: fast pan"d));
+        scrollContent.addChild(new TextWidget("ctrl5", "• R: reset camera"d));
+        scrollContent.addChild(new TextWidget("ctrl6", "• Shift+R: reset bone pose"d));
+        scrollContent.addChild(new TextWidget("ctrl7", "• Click skeleton: select bone"d));
+        scrollContent.addChild(new TextWidget("ctrl8", "• Esc: quit"d));
+
+        scroll.contentWidget = scrollContent;
+        panel.addChild(scroll);
 
         addChild(panel);
 
