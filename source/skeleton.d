@@ -81,6 +81,13 @@ private void flattenBoneBindWithMetadata(
         flattenBoneBindWithMetadata(child, bindWorld, index, parentIndices, boneNames);
 }
 
+private void flattenBoneLengths(ref const(BoneNode) bone, ref float[] lengths)
+{
+    lengths ~= (bone.tailPos - bone.pos).length;
+    foreach (child; bone.children)
+        flattenBoneLengths(child, lengths);
+}
+
 struct SkeletonRuntime
 {
     mat4[] bindWorld;
@@ -90,6 +97,7 @@ struct SkeletonRuntime
     mat4[] skinMatrices;
     int[] parentIndex;
     string[] boneNames;
+    float[] boneLength;
     float[] rotationY;
     size_t selectedBoneIndex;
 
@@ -112,6 +120,7 @@ struct SkeletonRuntime
         skinMatrices = null;
         parentIndex = null;
         boneNames = null;
+        boneLength = null;
         rotationY = null;
         selectedBoneIndex = 0;
 
@@ -119,7 +128,10 @@ struct SkeletonRuntime
             return;
 
         foreach (root; skeleton.bones)
+        {
             flattenBoneBindWithMetadata(root, bindWorld, -1, parentIndex, boneNames);
+            flattenBoneLengths(root, boneLength);
+        }
 
         if (bindWorld.length == 0)
             return;

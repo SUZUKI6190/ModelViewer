@@ -147,7 +147,10 @@ struct SkeletonRenderer
         ShaderProgram lineShader,
         ShaderProgram skeletonMeshShader,
         mat4 modelMatrix,
-        mat4 mvpMatrix) const
+        mat4 mvpMatrix,
+        const GeoModel model = GeoModel.init,
+        const(mat4[]) boneWorldMatrices = null,
+        size_t selectedBoneIndex = size_t.max) const
     {
         if (!_uploaded)
             return;
@@ -169,24 +172,35 @@ struct SkeletonRenderer
         enum float axisLineWidth = 2.0f;
 
         if (drawLines && _boneLines.valid)
-            drawLineBatchTwoPass(_boneLines, lineShader, mvpMatrix, dimLineColor, brightLineColor, lineWidth);
+            drawLineBatch(_boneLines, lineShader, mvpMatrix, dimLineColor, lineWidth);
 
         if (drawCones && _coneMesh.valid)
-            drawMeshBatchTwoPass(
-                _coneMesh, skeletonMeshShader, modelMatrix, mvpMatrix, dimConeColor, brightConeColor);
+            drawMeshBatch(_coneMesh, skeletonMeshShader, modelMatrix, mvpMatrix, dimConeColor);
 
         if (showRollMark && _rollMarkMesh.valid)
-            drawMeshBatchTwoPass(
-                _rollMarkMesh, skeletonMeshShader, modelMatrix, mvpMatrix, rollColor, rollColor);
+            drawMeshBatch(_rollMarkMesh, skeletonMeshShader, modelMatrix, mvpMatrix, rollColor);
 
         if (showBoneAxes)
         {
             if (_axisXLines.valid)
-                drawLineBatchTwoPass(_axisXLines, lineShader, mvpMatrix, axisXColor, axisXColor, axisLineWidth);
+                drawLineBatch(_axisXLines, lineShader, mvpMatrix, axisXColor, axisLineWidth);
             if (_axisYLines.valid)
-                drawLineBatchTwoPass(_axisYLines, lineShader, mvpMatrix, axisYColor, axisYColor, axisLineWidth);
+                drawLineBatch(_axisYLines, lineShader, mvpMatrix, axisYColor, axisLineWidth);
             if (_axisZLines.valid)
-                drawLineBatchTwoPass(_axisZLines, lineShader, mvpMatrix, axisZColor, axisZColor, axisLineWidth);
+                drawLineBatch(_axisZLines, lineShader, mvpMatrix, axisZColor, axisLineWidth);
+        }
+
+        if (selectedBoneIndex != size_t.max && boneWorldMatrices.length > 0)
+        {
+            drawSelectedBoneHighlight(
+                model,
+                selectedBoneIndex,
+                boneWorldMatrices,
+                style,
+                lineShader,
+                skeletonMeshShader,
+                modelMatrix,
+                mvpMatrix);
         }
     }
 
@@ -199,7 +213,8 @@ struct SkeletonRenderer
         ShaderProgram lineShader,
         ShaderProgram skeletonMeshShader,
         mat4 modelMatrix,
-        mat4 mvpMatrix)
+        mat4 mvpMatrix,
+        size_t selectedBoneIndex = size_t.max)
     {
         LineVertex[] boneVertices;
         uint[] boneIndices;
@@ -274,7 +289,17 @@ struct SkeletonRenderer
         updateMeshBatch(_rollMarkMesh, rollVertices, rollIndices);
         _uploaded = true;
 
-        draw(style, showBoneAxes, showRollMark, lineShader, skeletonMeshShader, modelMatrix, mvpMatrix);
+        draw(
+            style,
+            showBoneAxes,
+            showRollMark,
+            lineShader,
+            skeletonMeshShader,
+            modelMatrix,
+            mvpMatrix,
+            model,
+            boneWorldMatrices,
+            selectedBoneIndex);
     }
 
     void destroyGpu()
@@ -777,6 +802,142 @@ struct SkeletonRenderer
 
         glBindVertexArray(0);
         batch.valid = true;
+    }
+
+    private static void drawSelectedBoneHighlight(
+        const GeoModel model,
+        size_t selectedIndex,
+        const(mat4[]) boneWorldMatrices,
+        SkeletonDisplayStyle style,
+        ShaderProgram lineShader,
+        ShaderProgram skeletonMeshShader,
+        mat4 modelMatrix,
+        mat4 mvpMatrix)
+    {
+        mat4 boneMatrix;
+        float length;
+        if (!findBoneMatrix(model, selectedIndex, boneWorldMatrices, boneMatrix, length))
+            return;
+
+        const bool drawLines = style == SkeletonDisplayStyle.lines || style == SkeletonDisplayStyle.both;
+        const bool drawCones = style == SkeletonDisplayStyle.cones || style == SkeletonDisplayStyle.both;
+
+        LineVertex[] lineVertices;
+        uint[] lineIndices;
+        MeshVertex[] coneVertices;
+        uint[] coneIndices;
+
+        vec3 posedOrigin = transformPoint(boneMatrix, vec3(0, 0, 0));
+        vec3 posedTail = transformPoint(boneMatrix, vec3(0, length, 0));
+        collectLineSegment(posedOrigin, posedTail, lineVertices, lineIndices);
+
+        if (drawCones && length > minBoneLength)
+        {
+            const float baseRadius = max(length * radiusFactor, minBaseRadius);
+            MeshVertex[] unitCone;
+            uint[] unitConeIndices;
+            buildUnitCone(unitCone, unitConeIndices, coneSegments);
+            mat4 coneTransform = boneMatrix * mat4.scaling(baseRadius, length, baseRadius);
+            appendTransformedMesh(unitCone, unitConeIndices, coneTransform, coneVertices, coneIndices);
+        }
+
+        enum float[3] brightLineColor = [1.0f, 0.55f, 0.15f];
+        enum float[3] brightConeColor = [1.0f, 0.55f, 0.15f];
+        enum float highlightLineWidth = 3.5f;
+
+        GpuLineBatch lineBatch;
+        GpuMeshBatch coneBatch;
+        scope (exit)
+        {
+            destroyLineBatch(lineBatch);
+            destroyMeshBatch(coneBatch);
+        }
+
+        if (drawLines && lineVertices.length > 0)
+        {
+            uploadLineBatch(lineBatch, lineVertices, lineIndices);
+            glEnable(GL_DEPTH_TEST);
+            drawLineBatch(lineBatch, lineShader, mvpMatrix, brightLineColor, highlightLineWidth);
+            glDisable(GL_DEPTH_TEST);
+            drawLineBatch(lineBatch, lineShader, mvpMatrix, brightLineColor, highlightLineWidth);
+            glEnable(GL_DEPTH_TEST);
+        }
+
+        if (drawCones && coneVertices.length > 0)
+        {
+            uploadMeshBatch(coneBatch, coneVertices, coneIndices);
+            glEnable(GL_DEPTH_TEST);
+            drawMeshBatch(coneBatch, skeletonMeshShader, modelMatrix, mvpMatrix, brightConeColor);
+            glDisable(GL_DEPTH_TEST);
+            drawMeshBatch(coneBatch, skeletonMeshShader, modelMatrix, mvpMatrix, brightConeColor);
+            glEnable(GL_DEPTH_TEST);
+        }
+    }
+
+    private static bool findBoneMatrix(
+        const GeoModel model,
+        size_t targetIndex,
+        const(mat4[]) boneWorldMatrices,
+        ref mat4 outMatrix,
+        ref float outLength)
+    {
+        size_t boneIndex = 0;
+        foreach (batch; model.triangles)
+        {
+            if (findBoneMatrixInSkeleton(batch.skeleton, targetIndex, boneWorldMatrices, boneIndex, outMatrix, outLength))
+                return true;
+        }
+        foreach (batch; model.lines)
+        {
+            if (findBoneMatrixInSkeleton(batch.skeleton, targetIndex, boneWorldMatrices, boneIndex, outMatrix, outLength))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool findBoneMatrixInSkeleton(
+        const Skeleton skeleton,
+        size_t targetIndex,
+        const(mat4[]) boneWorldMatrices,
+        ref size_t boneIndex,
+        ref mat4 outMatrix,
+        ref float outLength)
+    {
+        if (!skeleton.isValid)
+            return false;
+
+        foreach (bone; skeleton.bones)
+        {
+            if (findBoneMatrixInNode(bone, targetIndex, boneWorldMatrices, boneIndex, outMatrix, outLength))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool findBoneMatrixInNode(
+        ref const(BoneNode) bone,
+        size_t targetIndex,
+        const(mat4[]) boneWorldMatrices,
+        ref size_t boneIndex,
+        ref mat4 outMatrix,
+        ref float outLength)
+    {
+        if (boneIndex == targetIndex)
+        {
+            outMatrix = boneIndex < boneWorldMatrices.length
+                ? boneWorldMatrices[boneIndex]
+                : bindMatrixFromBone(bone);
+            outLength = (bone.tailPos - bone.pos).length;
+            return true;
+        }
+
+        boneIndex++;
+        foreach (child; bone.children)
+        {
+            if (findBoneMatrixInNode(child, targetIndex, boneWorldMatrices, boneIndex, outMatrix, outLength))
+                return true;
+        }
+        return false;
     }
 
     private static void drawLineBatchTwoPass(

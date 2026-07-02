@@ -30,6 +30,7 @@ import mesh;
 import settings;
 import shader;
 import skeleton;
+import skeleton_pick;
 import skeleton_renderer;
 import skinning;
 
@@ -68,6 +69,7 @@ class ViewportWidget : Widget
     ShaderProgram* _skinnedMeshShader;
     bool _shaderCompileFailed;
     void delegate() _onGpuStateChanged;
+    void delegate(size_t) _onBonePicked;
     bool _gpuStateReported;
     uint _animFrame;
     ulong _animTimerId;
@@ -75,6 +77,8 @@ class ViewportWidget : Widget
     bool _skeletonGpuDirty;
     bool _boneDragging;
     float _boneDragLastX;
+    bool _leftPending;
+    gl3n.linalg.vec2 _mouseDownPos;
     AxisGizmo _axisGizmo;
     AxisLabelRenderer _axisLabels;
     SkeletonRenderer _skeletonRenderer;
@@ -265,46 +269,6 @@ class ViewportWidget : Widget
         auto viewport = gl3n.linalg.vec2(cast(float)width, cast(float)height);
         auto mousePos = gl3n.linalg.vec2(cast(float)event.x, cast(float)event.y);
 
-        if (_state.editPose && _state.skeletonRuntime.active)
-        {
-            switch (event.action)
-            {
-            case MouseAction.ButtonDown:
-                if (event.button == MouseButton.Left)
-                {
-                    _boneDragging = true;
-                    _boneDragLastX = mousePos.x;
-                    return true;
-                }
-                break;
-
-            case MouseAction.Move:
-                if (_boneDragging)
-                {
-                    const deltaX = mousePos.x - _boneDragLastX;
-                    _boneDragLastX = mousePos.x;
-                    enum dragSensitivity = 0.01f;
-                    _state.skeletonRuntime.addSelectedRotationY(deltaX * dragSensitivity);
-                    if (_onGpuStateChanged !is null)
-                        _onGpuStateChanged();
-                    invalidate();
-                    return true;
-                }
-                break;
-
-            case MouseAction.ButtonUp:
-                if (event.button == MouseButton.Left && _boneDragging)
-                {
-                    _boneDragging = false;
-                    return true;
-                }
-                break;
-
-            default:
-                break;
-            }
-        }
-
         switch (event.action)
         {
         case MouseAction.Wheel:
@@ -314,11 +278,56 @@ class ViewportWidget : Widget
 
         case MouseAction.ButtonDown:
             setFocus();
+            if (event.button == MouseButton.Left)
+            {
+                if ((event.flags & MouseFlag.Shift) != 0)
+                {
+                    beginCameraDrag(event, mousePos, viewport);
+                    invalidate();
+                    return true;
+                }
+                _leftPending = true;
+                _mouseDownPos = mousePos;
+                _boneDragging = false;
+                return true;
+            }
             beginCameraDrag(event, mousePos, viewport);
             invalidate();
             return true;
 
         case MouseAction.Move:
+            if (_leftPending && !_boneDragging && !_state.camera.dragging)
+            {
+                const auto delta = mousePos - _mouseDownPos;
+                enum dragThresholdSq = 3.0f * 3.0f;
+                if (delta.length_squared >= dragThresholdSq)
+                {
+                    _leftPending = false;
+                    if (_state.editPose && _state.skeletonRuntime.active)
+                    {
+                        _boneDragging = true;
+                        _boneDragLastX = mousePos.x;
+                    }
+                    else
+                    {
+                        _state.camera.beginDrag(DragMode.rotate, _mouseDownPos, viewport);
+                        _state.camera.updateDrag(mousePos, viewport);
+                    }
+                }
+            }
+
+            if (_boneDragging)
+            {
+                const deltaX = mousePos.x - _boneDragLastX;
+                _boneDragLastX = mousePos.x;
+                enum dragSensitivity = 0.01f;
+                _state.skeletonRuntime.addSelectedRotationY(deltaX * dragSensitivity);
+                if (_onGpuStateChanged !is null)
+                    _onGpuStateChanged();
+                invalidate();
+                return true;
+            }
+
             if (_state.camera.dragging)
             {
                 _state.camera.updateDrag(mousePos, viewport);
@@ -327,6 +336,13 @@ class ViewportWidget : Widget
             return true;
 
         case MouseAction.ButtonUp:
+            if (event.button == MouseButton.Left)
+            {
+                if (_leftPending)
+                    tryPickBone(mousePos, viewport);
+                _leftPending = false;
+                _boneDragging = false;
+            }
             _state.camera.resetDrag();
             invalidate();
             return true;
@@ -334,6 +350,34 @@ class ViewportWidget : Widget
         default:
             return false;
         }
+    }
+
+    private void tryPickBone(gl3n.linalg.vec2 mousePos, gl3n.linalg.vec2 viewport)
+    {
+        if (!_state.showSkeleton || !_state.skeletonRuntime.active)
+            return;
+
+        gl3n.linalg.mat4 viewMatrix = _state.camera.viewMatrix();
+        gl3n.linalg.mat4 projectionMatrix = _state.camera.projectionMatrix(viewport.x, viewport.y);
+        const bool usePosed = _state.skeletonRuntime.active
+            && (_state.skinningActive || _state.editPose);
+
+        const int picked = pickBoneAtScreen(
+            mousePos,
+            viewport,
+            _state.camera,
+            viewMatrix,
+            projectionMatrix,
+            _state.skeletonRuntime,
+            usePosed);
+
+        if (picked < 0)
+            return;
+
+        _state.skeletonRuntime.setSelectedBone(picked);
+        if (_onBonePicked !is null)
+            _onBonePicked(picked);
+        invalidate();
     }
 
     override bool onKeyEvent(KeyEvent event)
@@ -431,6 +475,11 @@ class ViewportWidget : Widget
 
         if (_state.showSkeleton && (_skeletonRenderer.hasContent || poseActive))
         {
+            const size_t selectedBone = _state.skeletonRuntime.selectedBoneIndex;
+            const gl3n.linalg.mat4[] boneWorld = poseActive
+                ? _state.skeletonRuntime.currentWorld
+                : _state.skeletonRuntime.bindWorld;
+
             if (poseActive)
             {
                 _skeletonRenderer.drawPosed(
@@ -442,7 +491,8 @@ class ViewportWidget : Widget
                     *_lineShader,
                     *_skeletonMeshShader,
                     modelMatrix,
-                    mvpMatrix);
+                    mvpMatrix,
+                    selectedBone);
             }
             else if (_skeletonRenderer.hasContent)
             {
@@ -453,7 +503,10 @@ class ViewportWidget : Widget
                     *_lineShader,
                     *_skeletonMeshShader,
                     modelMatrix,
-                    mvpMatrix);
+                    mvpMatrix,
+                    _state.model,
+                    boneWorld,
+                    selectedBone);
             }
         }
 
@@ -720,7 +773,8 @@ class ModelViewerWidget : HorizontalLayout
         panel.addChild(new TextWidget("ctrl4", "• Shift + drag: fast pan"d));
         panel.addChild(new TextWidget("ctrl5", "• R: reset camera"d));
         panel.addChild(new TextWidget("ctrl6", "• Shift+R: reset bone pose"d));
-        panel.addChild(new TextWidget("ctrl7", "• Esc: quit"d));
+        panel.addChild(new TextWidget("ctrl7", "• Click skeleton: select bone"d));
+        panel.addChild(new TextWidget("ctrl8", "• Esc: quit"d));
 
         addChild(panel);
 
@@ -731,6 +785,7 @@ class ModelViewerWidget : HorizontalLayout
             &_skeletonMeshShader,
             &_skinnedMeshShader,
             &onGpuStateChanged);
+        _viewport._onBonePicked = &onBonePickedFromViewport;
         addChild(_viewport);
 
         if (!tryLoadModel())
@@ -807,6 +862,12 @@ class ModelViewerWidget : HorizontalLayout
     private void onGpuStateChanged()
     {
         refreshUi();
+    }
+
+    private void onBonePickedFromViewport(size_t boneIndex)
+    {
+        _boneCombo.selectedItemIndex = cast(int)boneIndex;
+        updateBoneRotationUi();
     }
 
     private bool onLoadClicked(Widget)
